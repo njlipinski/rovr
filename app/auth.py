@@ -1,0 +1,1 @@
+"""handles login and password logic, including hashing and salting passwords, and verifying login credentials"""
