@@ -1,6 +1,6 @@
 # main.py
 import sys
-from pyqt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 from app.db import get_db_connection, initialize_db
 from app.ui.login import LoginUI
 
