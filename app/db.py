@@ -61,6 +61,23 @@ def get_open_scenes_for_user(conn, user_id):
     """returns all open scenes for a specific user"""
     return conn.execute("SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN ('approved', 'needs_attention')", (user_id,)).fetchall()
 
+def claim_scene(conn, scene_id, analyst_id):
+    cur = conn.execute(
+        "UPDATE scenes SET status='in_review', claimed_by=? "
+        "WHERE id=? AND status='pending_review'",   # only if still available
+        (analyst_id, scene_id)
+    )
+    conn.commit()
+    return cur.rowcount == 1   # True if claim succeeded, prevent race condition
+
+def release_scene(conn, scene_id):
+    """release a claimed scene back to the pool"""
+    conn.execute(
+        "UPDATE scenes SET status='pending_review', claimed_by=NULL, updated_at=datetime('now') WHERE id=?",
+        (scene_id,)
+    )
+    conn.commit()
+    
 def update_scene_status(conn, scene_id, new_status):
     """updates a scene's status in the database"""
     conn.execute("UPDATE scenes SET status = ?, updated_at = datetime('now') WHERE id = ?", (new_status, scene_id))

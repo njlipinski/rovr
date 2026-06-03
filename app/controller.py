@@ -1,7 +1,9 @@
 # controller.py
 """controller logic"""
-from app.db import get_scene_by_id, update_scene_status, log_review, update_scene_assignment
-
+from app.db import (
+    get_scene_by_id, update_scene_status, log_review,
+    update_scene_assignment, claim_scene, release_scene, get_user_by_id
+)
 
 def submit_scene(conn, scene_id, analyst_id):
     """analyst 1 submits a scene for peer review"""
@@ -46,5 +48,37 @@ def reassign_scene(conn, scene_id, new_analyst_id, supervisor_id, comments):
     update_scene_status(conn, scene_id, 'needs_revision')
     update_scene_assignment(conn, scene_id, new_analyst_id)
     log_review(conn, scene_id, supervisor_id, 'reassignment', 'reassigned', comments)
-    
-    
+
+def claim_scene_for_review(conn, scene_id, analyst_id):
+    """analyst claims a scene for peer review — returns True if successful"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene is None:
+        raise ValueError(f"Scene {scene_id} not found")
+    if scene['owner_id'] == analyst_id:
+        raise ValueError("Analysts cannot claim their own scenes")
+    if scene['status'] != 'pending_review':
+        return False  # already claimed or not available
+
+    # atomic claim — only succeeds if scene is still unclaimed
+    success = claim_scene(conn, scene_id, analyst_id)
+    return success
+
+
+def release_scene_to_pool(conn, scene_id, analyst_id):
+    """analyst releases a scene they claimed back to the review pool"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != 'in_review':
+        raise ValueError("Only scenes in review can be released")
+    if scene['claimed_by'] != analyst_id:
+        raise ValueError("You can only release scenes you claimed")
+    release_scene(conn, scene_id)
+
+
+def force_release_scene(conn, scene_id, supervisor_id, comments=""):
+    """supervisor force-releases a stuck claim back to the pool"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != 'in_review':
+        raise ValueError("Only scenes in review can be force-released")
+    release_scene(conn, scene_id)
+    log_review(conn, scene_id, supervisor_id, 'admin', 'force_released',
+               comments or f"Claim by user {scene['claimed_by']} force-released")
