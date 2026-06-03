@@ -14,6 +14,8 @@ def submit_scene(conn, scene_id, analyst_id):
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
     """peer reviewer reviews a scene and either approves it or kicks it back to the analyst for revision"""
     scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != 'pending_review':
+        raise ValueError("Scene is not pending peer review")
     if scene['owner_id'] == reviewer_id:
         raise ValueError("Analysts cannot review their own scenes")
     if decision not in ('approve', 'request_revision'):
@@ -27,8 +29,11 @@ def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
 
 def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
     """supervisor reviews a scene and either approves it or kicks it back to the analyst for revision"""
+    scene = get_scene_by_id(conn, scene_id)
     if decision not in ('approve', 'request_revision'):
         raise ValueError(f"Invalid decision: {decision}")
+    if scene['status'] != 'pending_supervisor':
+        raise ValueError("Scene is not pending supervisor review")
     if decision == 'approve':
         update_scene_status(conn, scene_id, 'approved')
         log_review(conn, scene_id, supervisor_id, 'supervisor_review', 'approved', comments)

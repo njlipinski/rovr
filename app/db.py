@@ -1,8 +1,8 @@
 # app/db.py
+"""all SQLite operations, including creating tables and inserting data"""
 import sqlite3
 from config import DB_PATH
 
-"""all SQLite operations, including creating tables and inserting data"""
 
 """
 User related functions
