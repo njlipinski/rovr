@@ -3,7 +3,6 @@
 import sqlite3
 from config import DB_PATH
 
-
 """
 User related functions
 """
@@ -11,6 +10,10 @@ User related functions
 def get_user_by_username(conn, username):
     """returns a user by their username"""
     return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+def get_user_by_id(conn, user_id):
+    """returns a user by their user ID"""
+    return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
 
 def get_all_active_analysts(conn):
     return conn.execute("SELECT * FROM users WHERE active = 1 AND role = 'analyst'").fetchall()

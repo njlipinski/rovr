@@ -1,8 +1,7 @@
 # app/models.py
+"""plain Python dataclasses that represent core objects (user, scene, review, etc.)"""
 from dataclasses import dataclass
 from typing import Optional
-
-"""plain Python dataclasses that represent core objects (user, scene, review, etc.)"""
 
 @dataclass
 class SceneStatus:
