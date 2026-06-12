@@ -18,6 +18,13 @@ def get_user_by_id(conn, user_id):
 def get_all_active_analysts(conn):
     return conn.execute("SELECT * FROM users WHERE active = 1 AND role = 'analyst'").fetchall()
 
+def get_all_users(conn):
+    return conn.execute("SELECT * FROM users ORDER BY role, username").fetchall()
+
+def activate_user(conn, user_id):
+    conn.execute("UPDATE users SET active = 1 WHERE id = ?", (user_id,))
+    conn.commit()
+
 def create_user(conn, username, password_hash, role):
     """creates a new user in the database"""
     conn.execute("INSERT INTO users (username, active, password_hash, role) VALUES (?, ?, ?, ?)", (username, 1, password_hash, role))
