@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 from app.ui.dashboard import Dashboard
 from app.db import get_analyst_queue, get_ready_queue
 from app.controller import claim_scene_for_review
+from app.models import SceneStatus
 
 
 class AnalystDashboard(Dashboard):
@@ -53,7 +54,7 @@ class AnalystDashboard(Dashboard):
         for row, scene in enumerate(my_scenes):
             self.my_queue_table.setItem(row, 0, QTableWidgetItem(str(scene['id'])))
             self.my_queue_table.setItem(row, 1, QTableWidgetItem(scene['name']))
-            self.my_queue_table.setItem(row, 2, QTableWidgetItem(scene['status']))
+            self.my_queue_table.setItem(row, 2, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
 
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self.review_queue_table.setRowCount(len(ready_scenes))

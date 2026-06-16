@@ -2,73 +2,99 @@
 """controller logic"""
 from app.db import (
     get_scene_by_id, update_scene_status, log_review,
-    update_scene_assignment, claim_scene, release_scene, get_user_by_id
+    update_scene_assignment, claim_from_pool as db_claim_from_pool,
+    claim_for_review as db_claim_for_review, release_scene,
+    set_peer_reviewer, set_supervisor, get_user_by_id
 )
+from app.models import SceneStatus
+
+
+def claim_from_pool(conn, scene_id, analyst_id):
+    """analyst 1 claims an unclaimed scene from the pool (0 → 1)"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene is None:
+        raise ValueError(f"Scene {scene_id} not found")
+    if scene['status'] != SceneStatus.UNCLAIMED:
+        return False
+    return db_claim_from_pool(conn, scene_id, analyst_id)
+
 
 def submit_scene(conn, scene_id, analyst_id):
-    """analyst 1 submits a scene for peer review"""
+    """analyst 1 submits a scene — claimed (1) goes to peer review (2),
+    needs revision (4) goes directly to supervisor (5), bypassing peer review"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] not in ('draft', 'needs_revision'):
-        raise ValueError("Only scenes in draft or needs_revision status can be submitted")
-    update_scene_status(conn, scene_id, 'pending_review')
-    log_review(conn, scene_id, analyst_id, 'submission', 'submitted', 'Scene submitted for peer review')
-    
+    if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.NEEDS_REVISION):
+        raise ValueError("Only claimed or needs-revision scenes can be submitted")
+    if scene['owner_id'] != analyst_id:
+        raise ValueError("Only the scene owner can submit")
+    if scene['status'] == SceneStatus.CLAIMED:
+        update_scene_status(conn, scene_id, SceneStatus.PENDING_REVIEW)
+        log_review(conn, scene_id, analyst_id, 'submission', 'submitted', None)
+    else:
+        update_scene_status(conn, scene_id, SceneStatus.PENDING_SUPERVISOR)
+        log_review(conn, scene_id, analyst_id, 'resubmission', 'submitted', None)
+
+
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
-    """peer reviewer reviews a scene and either approves it or kicks it back to the analyst for revision"""
+    """analyst 2 reviews a claimed scene (3) — approve → pending supervisor (5),
+    or kick back → needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] != 'pending_review':
-        raise ValueError("Scene is not pending peer review")
+    if scene['status'] != SceneStatus.IN_REVIEW:
+        raise ValueError("Scene is not currently in peer review")
     if scene['owner_id'] == reviewer_id:
         raise ValueError("Analysts cannot review their own scenes")
     if decision not in ('approve', 'request_revision'):
         raise ValueError(f"Invalid decision: {decision}")
+    set_peer_reviewer(conn, scene_id, reviewer_id)
     if decision == 'approve':
-        update_scene_status(conn, scene_id, 'pending_supervisor')
+        update_scene_status(conn, scene_id, SceneStatus.PENDING_SUPERVISOR)
         log_review(conn, scene_id, reviewer_id, 'peer_review', 'approved', comments)
-    elif decision == 'request_revision':
-        update_scene_status(conn, scene_id, 'needs_revision')
+    else:
+        update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
         log_review(conn, scene_id, reviewer_id, 'peer_review', 'needs_revision', comments)
 
+
 def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
-    """supervisor reviews a scene and either approves it or kicks it back to the analyst for revision"""
+    """supervisor reviews a scene (5) — approve → approved (6),
+    or kick back → needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != SceneStatus.PENDING_SUPERVISOR:
+        raise ValueError("Scene is not pending supervisor review")
     if decision not in ('approve', 'request_revision'):
         raise ValueError(f"Invalid decision: {decision}")
-    if scene['status'] != 'pending_supervisor':
-        raise ValueError("Scene is not pending supervisor review")
+    set_supervisor(conn, scene_id, supervisor_id)
     if decision == 'approve':
-        update_scene_status(conn, scene_id, 'approved')
+        update_scene_status(conn, scene_id, SceneStatus.APPROVED)
         log_review(conn, scene_id, supervisor_id, 'supervisor_review', 'approved', comments)
-    elif decision == 'request_revision':
-        update_scene_status(conn, scene_id, 'needs_revision')
+    else:
+        update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
         log_review(conn, scene_id, supervisor_id, 'supervisor_review', 'needs_revision', comments)
-        
+
+
 def reassign_scene(conn, scene_id, new_analyst_id, supervisor_id, comments):
-    """supervisor reassigns a scene to a different analyst"""
-    update_scene_status(conn, scene_id, 'needs_revision')
+    """supervisor reassigns a needs-attention scene (7) to a different analyst"""
+    update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
     update_scene_assignment(conn, scene_id, new_analyst_id)
     log_review(conn, scene_id, supervisor_id, 'reassignment', 'reassigned', comments)
 
+
 def claim_scene_for_review(conn, scene_id, analyst_id):
-    """analyst claims a scene for peer review — returns True if successful"""
+    """analyst 2 claims a scene from the peer review pool (2 → 3)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene is None:
         raise ValueError(f"Scene {scene_id} not found")
     if scene['owner_id'] == analyst_id:
-        raise ValueError("Analysts cannot claim their own scenes")
-    if scene['status'] != 'pending_review':
-        return False  # already claimed or not available
-
-    # atomic claim — only succeeds if scene is still unclaimed
-    success = claim_scene(conn, scene_id, analyst_id)
-    return success
+        raise ValueError("Analysts cannot claim their own scenes for review")
+    if scene['status'] != SceneStatus.PENDING_REVIEW:
+        return False
+    return db_claim_for_review(conn, scene_id, analyst_id)
 
 
 def release_scene_to_pool(conn, scene_id, analyst_id):
-    """analyst releases a scene they claimed back to the review pool"""
+    """analyst releases a claimed scene back to its pool (1 → 0, or 3 → 2)"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] != 'in_review':
-        raise ValueError("Only scenes in review can be released")
+    if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
+        raise ValueError("Only claimed scenes can be released")
     if scene['claimed_by'] != analyst_id:
         raise ValueError("You can only release scenes you claimed")
     release_scene(conn, scene_id)
@@ -77,8 +103,8 @@ def release_scene_to_pool(conn, scene_id, analyst_id):
 def force_release_scene(conn, scene_id, supervisor_id, comments=""):
     """supervisor force-releases a stuck claim back to the pool"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] != 'in_review':
-        raise ValueError("Only scenes in review can be force-released")
+    if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
+        raise ValueError("Only claimed scenes can be force-released")
     release_scene(conn, scene_id)
     log_review(conn, scene_id, supervisor_id, 'admin', 'force_released',
                comments or f"Claim by user {scene['claimed_by']} force-released")

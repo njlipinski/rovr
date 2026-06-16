@@ -3,17 +3,14 @@
 import sqlite3
 from config import DB_PATH
 
-"""
-User related functions
-"""
+
+# ── User functions ────────────────────────────────────────────────────────────
 
 def get_user_by_username(conn, username):
-    """returns a user by their username"""
     return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
 
 def get_user_by_id(conn, user_id):
-    """returns a user by their user ID"""
-    return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
 def get_all_active_analysts(conn):
     return conn.execute("SELECT * FROM users WHERE active = 1 AND role = 'analyst'").fetchall()
@@ -21,109 +18,156 @@ def get_all_active_analysts(conn):
 def get_all_users(conn):
     return conn.execute("SELECT * FROM users ORDER BY role, username").fetchall()
 
+def create_user(conn, username, password_hash, role):
+    conn.execute(
+        "INSERT INTO users (username, active, password_hash, role) VALUES (?, 1, ?, ?)",
+        (username, password_hash, role)
+    )
+    conn.commit()
+
 def activate_user(conn, user_id):
     conn.execute("UPDATE users SET active = 1 WHERE id = ?", (user_id,))
     conn.commit()
 
-def create_user(conn, username, password_hash, role):
-    """creates a new user in the database"""
-    conn.execute("INSERT INTO users (username, active, password_hash, role) VALUES (?, ?, ?, ?)", (username, 1, password_hash, role))
-    conn.commit()
-    
 def deactivate_user(conn, user_id):
-    """deactivates a user in the database"""
+    """deactivate user and flag all their open scenes as needs_attention (status 7)"""
     conn.execute("""
-        UPDATE scenes SET status = 'needs_attention', updated_at = datetime('now')
-        WHERE owner_id = ? AND status NOT IN ('approved', 'needs_attention')
+        UPDATE scenes SET status = 7, claimed_by = NULL, updated_at = datetime('now')
+        WHERE owner_id = ? AND status NOT IN (6, 7)
     """, (user_id,))
     conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
     conn.commit()
-    
+
 def update_user_role(conn, user_id, new_role):
-    """updates a user's role in the database"""
     conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
     conn.commit()
-    
+
 def update_user_password(conn, user_id, new_password_hash):
-    """updates a user's password in the database"""
     conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
     conn.commit()
-    
-""" 
-Scene related functions
 
-States: approved, needs_revision, pending_supervisor, needs_attention, draft
-"""
+
+# ── Scene functions ───────────────────────────────────────────────────────────
+#
+# Status integers:
+#   0 unclaimed        — Scene Pool (shared, all analysts)
+#   1 claimed          — Analyst 1's to-do
+#   2 pending review   — Peer Review Pool (shared, all analysts except owner)
+#   3 in review        — Analyst 2's to-do
+#   4 needs revision   — Analyst 1's to-do
+#   5 pending super    — Supervisor Pool (shared, all supervisors)
+#   6 approved         — done
+#   7 needs attention  — supervisor attention queue
 
 def create_scene(conn, name, roi_filename, owner_id):
-    """creates a new scene in the database"""
     conn.execute(
-        "INSERT INTO scenes (name, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, ?)",
-        (name, roi_filename, owner_id, owner_id, 'draft')
+        "INSERT INTO scenes (name, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, 0)",
+        (name, roi_filename, owner_id, owner_id)
     )
     conn.commit()
-    
+
 def get_scene_by_id(conn, scene_id):
-    """returns a scene by its ID"""
     return conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone()
 
 def get_open_scenes_for_user(conn, user_id):
-    """returns all open scenes for a specific user"""
-    return conn.execute("SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN ('approved', 'needs_attention')", (user_id,)).fetchall()
+    return conn.execute(
+        "SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN (6, 7)",
+        (user_id,)
+    ).fetchall()
 
-def claim_scene(conn, scene_id, analyst_id):
+def claim_from_pool(conn, scene_id, analyst_id):
+    """analyst 1 atomically claims an unclaimed scene (0 → 1)"""
     cur = conn.execute(
-        "UPDATE scenes SET status='in_review', claimed_by=? "
-        "WHERE id=? AND status='pending_review'",   # only if still available
+        "UPDATE scenes SET status = 1, claimed_by = ? WHERE id = ? AND status = 0",
         (analyst_id, scene_id)
     )
     conn.commit()
-    return cur.rowcount == 1   # True if claim succeeded, prevent race condition
+    return cur.rowcount == 1
 
-def release_scene(conn, scene_id):
-    """release a claimed scene back to the pool"""
-    conn.execute(
-        "UPDATE scenes SET status='pending_review', claimed_by=NULL, updated_at=datetime('now') WHERE id=?",
-        (scene_id,)
+def claim_for_review(conn, scene_id, analyst_id):
+    """analyst 2 atomically claims a scene for peer review (2 → 3)"""
+    cur = conn.execute(
+        "UPDATE scenes SET status = 3, claimed_by = ? WHERE id = ? AND status = 2 AND owner_id != ?",
+        (analyst_id, scene_id, analyst_id)
     )
     conn.commit()
-    
+    return cur.rowcount == 1
+
+def release_scene(conn, scene_id):
+    """release a claimed scene back to the appropriate pool (1 → 0, or 3 → 2)"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] == 1:
+        target = 0
+    elif scene['status'] == 3:
+        target = 2
+    else:
+        return
+    conn.execute(
+        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
+        (target, scene_id)
+    )
+    conn.commit()
+
 def update_scene_status(conn, scene_id, new_status):
-    """updates a scene's status in the database"""
-    conn.execute("UPDATE scenes SET status = ?, updated_at = datetime('now') WHERE id = ?", (new_status, scene_id))
-    conn.commit() 
+    """update scene status and clear any claim lock"""
+    conn.execute(
+        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
+        (new_status, scene_id)
+    )
+    conn.commit()
 
 def update_scene_assignment(conn, scene_id, new_analyst_id):
-    """reassigns a scene to a different analyst"""
     conn.execute("UPDATE scenes SET assigned_to = ? WHERE id = ?", (new_analyst_id, scene_id))
     conn.commit()
-    
+
+def set_peer_reviewer(conn, scene_id, reviewer_id):
+    conn.execute("UPDATE scenes SET peer_reviewer_id = ? WHERE id = ?", (reviewer_id, scene_id))
+    conn.commit()
+
+def set_supervisor(conn, scene_id, supervisor_id):
+    conn.execute("UPDATE scenes SET supervisor_id = ? WHERE id = ?", (supervisor_id, scene_id))
+    conn.commit()
+
+
+# ── Queue getters ─────────────────────────────────────────────────────────────
+
 def get_analyst_queue(conn, user_id):
-    """returns all scenes that have been kicked back and are in the needs revision status"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 'needs_revision' AND assigned_to = ?", (user_id,)).fetchall()
+    """scenes in analyst's personal to-do: claimed (1) and needs revision (4)"""
+    return conn.execute(
+        "SELECT * FROM scenes WHERE status IN (1, 4) AND assigned_to = ?",
+        (user_id,)
+    ).fetchall()
+
+def get_peer_review_claimed(conn, user_id):
+    """scenes analyst 2 has currently claimed for peer review (status 3)"""
+    return conn.execute(
+        "SELECT * FROM scenes WHERE status = 3 AND claimed_by = ?",
+        (user_id,)
+    ).fetchall()
 
 def get_ready_queue(conn):
-    """returns all scenes that are in the ready for review status"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 'pending_review'").fetchall()
+    """scenes available for peer review (status 2, shared pool)"""
+    return conn.execute("SELECT * FROM scenes WHERE status = 2").fetchall()
 
 def get_supervisor_queue(conn):
-    """returns all scenes that are in the 'pending_supervisor' status"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 'pending_supervisor'").fetchall()
+    """scenes awaiting supervisor approval (status 5, shared pool)"""
+    return conn.execute("SELECT * FROM scenes WHERE status = 5").fetchall()
 
 def get_needs_attention_queue(conn):
-    """returns all scenes that are in the 'needs_attention' status"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 'needs_attention'").fetchall()
+    """scenes flagged for supervisor reassignment (status 7)"""
+    return conn.execute("SELECT * FROM scenes WHERE status = 7").fetchall()
+
+
+# ── Review functions ──────────────────────────────────────────────────────────
 
 def log_review(conn, scene_id, reviewer_id, stage, decision, comments):
-    """logs a review decision in the database"""
     conn.execute(
         "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments) VALUES (?, ?, ?, ?, ?)",
         (scene_id, reviewer_id, stage, decision, comments)
     )
     conn.commit()
-    
+
 def get_scene_history(conn, scene_id):
-    """returns the review history for a specific scene"""
     return conn.execute("""
         SELECT r.*, u.username AS reviewer_name
         FROM reviews r
@@ -132,22 +176,17 @@ def get_scene_history(conn, scene_id):
         ORDER BY r.timestamp DESC
     """, (scene_id,)).fetchall()
 
-"""
-DB connection and initialization functions
-"""
+
+# ── Connection and initialization ─────────────────────────────────────────────
 
 def get_db_connection():
-    """returns a connection to the SQLite database"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    WAL = "PRAGMA journal_mode=WAL;"
-    conn.execute(WAL)
-    foreign_keys = "PRAGMA foreign_keys=ON;"
-    conn.execute(foreign_keys)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
 def initialize_db():
-    """initializes the database with necessary tables"""
     conn = get_db_connection()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -160,14 +199,17 @@ def initialize_db():
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS scenes (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            name            TEXT NOT NULL,
-            roi_filename    TEXT NOT NULL,
-            owner_id        INTEGER NOT NULL REFERENCES users (id),
-            assigned_to     INTEGER NOT NULL REFERENCES users (id),
-            status          TEXT NOT NULL,
-            submitted_at    TEXT,
-            updated_at      TEXT DEFAULT (datetime('now'))
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                TEXT NOT NULL,
+            roi_filename        TEXT NOT NULL,
+            owner_id            INTEGER NOT NULL REFERENCES users (id),
+            assigned_to         INTEGER NOT NULL REFERENCES users (id),
+            peer_reviewer_id    INTEGER REFERENCES users (id),
+            supervisor_id       INTEGER REFERENCES users (id),
+            status              INTEGER NOT NULL,
+            claimed_by          INTEGER REFERENCES users (id),
+            submitted_at        TEXT,
+            updated_at          TEXT DEFAULT (datetime('now'))
         )
     """)
     conn.execute("""
