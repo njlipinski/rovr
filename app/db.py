@@ -59,7 +59,8 @@ def update_user_password(conn, user_id, new_password_hash):
 #   6 approved         — done
 #   7 needs attention  — supervisor attention queue
 
-def create_scene(conn, name, roi_filename, owner_id):
+def create_scene(conn, name, roi_filename, owner_id=None):
+    """create a scene; owner_id is None for pool-imported scenes (set at claim time)"""
     conn.execute(
         "INSERT INTO scenes (name, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, 0)",
         (name, roi_filename, owner_id, owner_id)
@@ -76,10 +77,14 @@ def get_open_scenes_for_user(conn, user_id):
     ).fetchall()
 
 def claim_from_pool(conn, scene_id, analyst_id):
-    """analyst 1 atomically claims an unclaimed scene (0 → 1)"""
+    """analyst 1 atomically claims an unclaimed scene (0 → 1), setting owner if not yet assigned"""
     cur = conn.execute(
-        "UPDATE scenes SET status = 1, claimed_by = ? WHERE id = ? AND status = 0",
-        (analyst_id, scene_id)
+        """UPDATE scenes
+           SET status = 1, claimed_by = ?,
+               owner_id   = COALESCE(owner_id,   ?),
+               assigned_to = COALESCE(assigned_to, ?)
+           WHERE id = ? AND status = 0""",
+        (analyst_id, analyst_id, analyst_id, scene_id)
     )
     conn.commit()
     return cur.rowcount == 1
@@ -201,12 +206,12 @@ def initialize_db():
         CREATE TABLE IF NOT EXISTS scenes (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             name                TEXT NOT NULL,
-            roi_filename        TEXT NOT NULL,
-            owner_id            INTEGER NOT NULL REFERENCES users (id),
-            assigned_to         INTEGER NOT NULL REFERENCES users (id),
+            roi_filename        TEXT NOT NULL UNIQUE,
+            owner_id            INTEGER REFERENCES users (id),
+            assigned_to         INTEGER REFERENCES users (id),
             peer_reviewer_id    INTEGER REFERENCES users (id),
             supervisor_id       INTEGER REFERENCES users (id),
-            status              INTEGER NOT NULL,
+            status              INTEGER NOT NULL DEFAULT 0,
             claimed_by          INTEGER REFERENCES users (id),
             submitted_at        TEXT,
             updated_at          TEXT DEFAULT (datetime('now'))

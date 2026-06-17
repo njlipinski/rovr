@@ -11,3 +11,7 @@ DB_PATH = r"data\rovr.sqlite"
 
 # Path to ROI Studio executable
 ROI_STUDIO_PATH = r"C:\Program Files\ROI Studio\ROI Studio.exe"
+
+# Root Pancam directory on the Rice drive, containing sol#### subdirectories.
+# Used by setup/import_scenes.py to scan for new Pancam scenes to load into the database.
+PANCAM_PATH = r"R:\Rice\Pancam\MERA\iof"
