@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Scan R:\Rice\Pancam\MERA\iof\sol#### directories for Pancam .IMG files,
-group images by (site, pos, seq) to identify scenes, and import new ones as
+"""Scan R:\\Rice\\Pancam\\MERA\\iof\\sol#### directories for Pancam IOF .IMG files,
+group them by (sol, seqID) to identify scenes, and import new ones as
 unclaimed scenes (status 0).
 
-Both left and right eye images for the same pointing are part of the same scene.
-Owner is not set at import time — it is assigned when analyst 1 claims the scene.
+Left and right eye images with the same sol and seqID are part of the same scene.
+Owner and roi_filename are not set at import time — owner is assigned when
+Analyst 1 claims the scene; roi_filename is set when the .sel file is saved.
+
+Scenes are currently imported from MERA only for testing purposes.
+TODO: import MERB
 
 Usage (run from repo root):
     python setup/import_scenes.py
-    python setup/import_scenes.py --path "R:\\Rice\\Pancam\\MERA\\iof"
+    python setup/import_scenes.py --path "R:\\Rice\\Pancam"
     python setup/import_scenes.py --dry-run
 """
 
@@ -26,85 +30,102 @@ try:
 except ImportError:
     PANCAM_PATH = None
 
-# MER EDR/RDR filename: 27 chars before the dot, then 3-char extension.
-# Layout: [scid(1)][inst(1)][sclk(9)][prod(3)][site(2)][pos(2)][seq(5)][eye(1)][filt(1)][who(1)][ver(1)].[ext(3)]
-_IMG_RE = re.compile(
-    r'^([12])'          # scid: 1=MER-B, 2=MER-A
-    r'([A-Z])'          # inst: P=Pancam, N=Navcam, F/R=Hazcam, etc.
-    r'\d{9}'            # sclk
-    r'[A-Z0-9]{3}'      # product type (e.g. IOF, EFF)
-    r'([A-Z0-9]{2})'    # site
-    r'([A-Z0-9]{2})'    # pos
-    r'([A-Z0-9]{5})'    # seq (e.g. P2210)
-    r'[LRM]'            # eye — L and R are the same scene
-    r'[0-9A-Z]'         # filter
-    r'[A-Z][0-9]'       # who + ver
-    r'\.[A-Z]{3}$',
-    re.IGNORECASE,
-)
+# sol#### folder pattern
+_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
 
-
-def _parse_pancam(filename):
-    """Return (site, pos, seq) if filename is a Pancam .IMG, else None."""
-    m = _IMG_RE.match(filename)
-    if not m:
-        return None
-    inst, site, pos, seq = m.group(2).upper(), m.group(3).upper(), m.group(4).upper(), m.group(5).upper()
-    if inst != 'P':
-        return None
-    return site, pos, seq
+# MER Pancam filename stem is exactly 25 chars (plus 3-char extension):
+# [scid(1)][inst(1)][sclk(9)][prod(3)][site(2)][pos(2)][seq(5)][eye(1)][filt(1)][who(1)][ver(1)]
+# The seq field (chars 18-22) is always 'P####' — the 4 digits are the seqID.
+_STEM_LEN = 25
 
 
 def _sol_num(dirname):
-    m = re.match(r'^sol(\d{4})$', dirname, re.IGNORECASE)
+    m = _SOL_RE.match(dirname)
     return int(m.group(1)) if m else None
 
 
-def find_scenes(root):
-    """Walk sol#### subdirectories and return sorted list of unique Pancam scenes.
+def _parse_img(filename):
+    """Return seqID digits (e.g. '2210') if this is an IOF Pancam .IMG, else None.
+
+    Filters:
+    - extension must be .img (case-insensitive)
+    - 'iof' must appear in the filename (case-insensitive) — skips IOT thumbnails
+    - filename stem must be exactly 25 chars with 'P####' at positions 18-22
+    """
+    name_lower = filename.lower()
+    if not name_lower.endswith('.img'):
+        return None
+    if 'iof' not in name_lower:
+        return None
+    dot = filename.rfind('.')
+    stem = filename[:dot]
+    if len(stem) != _STEM_LEN:
+        return None
+    seq_field = stem[18:23].upper()   # e.g. 'P2210'
+    if not seq_field.startswith('P') or not seq_field[1:].isdigit():
+        return None
+    return seq_field[1:]  # just the 4 digits
+
+
+def find_scenes(pancam_root):
+    """Walk MERA/iof/sol#### and return sorted list of unique scenes.
 
     Each scene dict has: name, scene_key, sol, image_count.
-    scene_key doubles as roi_filename — a stable unique identifier of the form
-    'MERA/sol####/SSPPQQQQQ' (site, pos, seq).
+
+    scene_key format: MERA/sol####/seqID#### (e.g. MERA/sol0042/seqID2210)
+    name format:      sol####seqID#### (e.g. sol0042seqID2210)
     """
+    rover = 'MERA'
+    iof_root = Path(pancam_root) / rover / 'iof'
+
+    if not iof_root.exists():
+        print(f"  Warning: {iof_root} does not exist, skipping {rover}.")
+        return []
+
     seen = {}
     sol_dirs = sorted(
-        (d for d in Path(root).iterdir() if d.is_dir() and _sol_num(d.name) is not None),
+        (d for d in iof_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None),
         key=lambda d: _sol_num(d.name),
     )
+
     for sol_dir in sol_dirs:
         sol = _sol_num(sol_dir.name)
         for f in sol_dir.iterdir():
             if not f.is_file():
                 continue
-            parsed = _parse_pancam(f.name)
-            if parsed is None:
+            seq = _parse_img(f.name)
+            if seq is None:
                 continue
-            site, pos, seq = parsed
-            key = f"MERA/sol{sol:04d}/{site}{pos}{seq}"
+            key = f"{rover}/sol{sol:04d}/seqID{seq}"
             if key not in seen:
                 seen[key] = {
-                    'name': f"Sol {sol:04d} — {site}{pos}{seq}",
+                    'name': f"sol{sol:04d}seqID{seq}",
                     'scene_key': key,
                     'sol': sol,
                     'image_count': 0,
                 }
             seen[key]['image_count'] += 1
 
-    return sorted(seen.values(), key=lambda s: (s['sol'], s['scene_key']))
+    scenes = sorted(seen.values(), key=lambda s: (s['sol'], s['scene_key']))
+
+    # Sanity check: warn on scenes with unexpected image counts (~13 expected)
+    for s in scenes:
+        if s['image_count'] != 13:
+            print(f"  Note: {s['name']} has {s['image_count']} images (expected ~13)")
+
+    return scenes
 
 
-def import_scenes(conn, scan_path, dry_run=False):
-    root = Path(scan_path)
-    sol_count = sum(1 for d in root.iterdir() if d.is_dir() and _sol_num(d.name) is not None)
-    print(f"Scanning {root}  ({sol_count} sol directories) ...")
+def import_scenes(conn, pancam_root, dry_run=False):
+    root = Path(pancam_root)
+    print(f"Scanning {root / 'MERA' / 'iof'} ...")
 
     scenes = find_scenes(root)
     if not scenes:
-        print("No Pancam scenes found.")
+        print("No scenes found.")
         return
 
-    existing = {row[0] for row in conn.execute("SELECT roi_filename FROM scenes").fetchall()}
+    existing = {row[0] for row in conn.execute("SELECT scene_key FROM scenes").fetchall()}
 
     added = skipped = 0
     for s in scenes:
@@ -113,7 +134,7 @@ def import_scenes(conn, scan_path, dry_run=False):
             continue
         if not dry_run:
             conn.execute(
-                "INSERT INTO scenes (name, roi_filename, status) VALUES (?, ?, 0)",
+                "INSERT INTO scenes (name, scene_key, status) VALUES (?, ?, 0)",
                 (s['name'], s['scene_key']),
             )
         print(f"  {'[dry run] ' if dry_run else ''}+ {s['name']}  ({s['image_count']} images)")
@@ -133,7 +154,8 @@ def main():
     parser.add_argument(
         "--path",
         default=PANCAM_PATH,
-        help="Root folder containing sol#### subdirectories (defaults to PANCAM_PATH in config.py)",
+        help="Root Pancam folder containing MERA/ and MERB/ subdirectories "
+             "(defaults to PANCAM_PATH in config.py)",
     )
     parser.add_argument(
         "--dry-run",
@@ -144,7 +166,7 @@ def main():
 
     if not args.path:
         print("Error: no path specified and PANCAM_PATH is not set in config.py.")
-        print("Usage: python setup/import_scenes.py --path <path>")
+        print("Usage: python setup/import_scenes.py --path <path to Pancam root>")
         sys.exit(1)
 
     if not Path(args.path).exists():

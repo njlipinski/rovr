@@ -59,11 +59,12 @@ def update_user_password(conn, user_id, new_password_hash):
 #   6 approved         — done
 #   7 needs attention  — supervisor attention queue
 
-def create_scene(conn, name, roi_filename, owner_id=None):
-    """create a scene; owner_id is None for pool-imported scenes (set at claim time)"""
+def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
+    """create a scene; owner_id and roi_filename are None for pool-imported scenes
+    (owner set at claim time, roi_filename set when analyst saves the .sel file)"""
     conn.execute(
-        "INSERT INTO scenes (name, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, 0)",
-        (name, roi_filename, owner_id, owner_id)
+        "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, ?, 0)",
+        (name, scene_key, roi_filename, owner_id, owner_id)
     )
     conn.commit()
 
@@ -206,7 +207,8 @@ def initialize_db():
         CREATE TABLE IF NOT EXISTS scenes (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             name                TEXT NOT NULL,
-            roi_filename        TEXT NOT NULL UNIQUE,
+            scene_key           TEXT NOT NULL UNIQUE,
+            roi_filename        TEXT UNIQUE,
             owner_id            INTEGER REFERENCES users (id),
             assigned_to         INTEGER REFERENCES users (id),
             peer_reviewer_id    INTEGER REFERENCES users (id),
