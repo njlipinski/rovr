@@ -137,6 +137,10 @@ def set_supervisor(conn, scene_id, supervisor_id):
 
 # ── Queue getters ─────────────────────────────────────────────────────────────
 
+def get_scene_pool(conn):
+    """all unclaimed scenes available for any analyst to claim (status 0)"""
+    return conn.execute("SELECT * FROM scenes WHERE status = 0").fetchall()
+
 def get_analyst_queue(conn, user_id):
     """scenes in analyst's personal to-do: claimed (1) and needs revision (4)"""
     return conn.execute(
@@ -186,9 +190,9 @@ def get_scene_history(conn, scene_id):
 # ── Connection and initialization ─────────────────────────────────────────────
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=1.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
