@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan R:\\Rice\\Pancam\\MERA\\iof\\sol#### directories for Pancam IOF .IMG files,
+"""Scan R:\\Rice\\Pancam\\MER#\\iof\\sol#### directories for Pancam IOF .IMG files,
 group them by (sol, seqID) to identify scenes, and import new ones as
 unclaimed scenes (status 0).
 
@@ -11,11 +11,9 @@ Left and right eye images with the same sol and seqID are part of the same scene
 Owner and roi_filename are not set at import time — owner is assigned when
 Analyst 1 claims the scene; roi_filename is set when the .sel file is saved.
 
-Scenes are currently imported from MERA only. MERB support is planned.
-
 Usage (run from repo root):
     python setup/import_scenes.py
-    python setup/import_scenes.py --path "R:\\\\Rice\\\\Pancam"
+    python setup/import_scenes.py --path "R:\\Rice\\Pancam"
     python setup/import_scenes.py --dry-run
 """
 
@@ -53,7 +51,7 @@ def _parse_img(filename):
     Filters:
     - extension must be .img (case-insensitive)
     - 'iof' must appear in the filename (case-insensitive) — skips IOT thumbnails
-    - filename stem must be exactly 25 chars with 'P####' at positions 18-22
+    - filename stem must be exactly 27 chars with 'P####' at positions 18-22
     """
     name_lower = filename.lower()
     if not name_lower.endswith('.img'):
@@ -93,16 +91,17 @@ def _scan_sol(sol_dir, rover):
 
 
 def import_scenes(conn, pancam_root, dry_run=False):
-    rover = 'MERA'
-    iof_root = Path(pancam_root) / rover / 'iof'
+    pancam_path = Path(pancam_root)
+    rover = "MERB"
+    rover_root = pancam_path / rover / "iof"
 
-    if not iof_root.exists():
-        print(f"Error: {iof_root} does not exist.")
+    if not rover_root.exists():
+        print(f"Error: {rover_root} does not exist.")
         return
 
     # Collect and sort sol directories upfront (fast — just a listing)
     sol_dirs = sorted(
-        (d for d in iof_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None),
+        (d for d in rover_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None),
         key=lambda d: _sol_num(d.name),
     )
     total_sols = len(sol_dirs)
@@ -113,7 +112,7 @@ def import_scenes(conn, pancam_root, dry_run=False):
     # Load already-imported scene keys so we can skip them
     existing = {row[0] for row in conn.execute("SELECT scene_key FROM scenes").fetchall()}
 
-    print(f"Found {total_sols} sol directories in {iof_root}")
+    print(f"Found {total_sols} sol directories in {rover_root}")
     print(f"{len(existing)} scene(s) already in database — will be skipped\n")
 
     total_added = total_skipped = total_warnings = 0
@@ -159,7 +158,7 @@ def import_scenes(conn, pancam_root, dry_run=False):
         print(f"{prefix}{label}  {', '.join(parts) if parts else 'nothing new'}")
 
         for w in warnings:
-            print(f"    Note: {w['name']} has {w['image_count']} images (expected ~13)")
+            print(f" {w['name']} has {w['image_count']} images")
 
         total_added += len(new_scenes)
         total_skipped += skip_count

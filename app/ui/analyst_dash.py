@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from app.ui.dashboard import Dashboard
 from app.db import get_analyst_queue, get_ready_queue, get_scene_pool
-from app.controller import claim_from_pool, claim_scene_for_review
+from app.controller import claim_from_pool, claim_scene_for_review, submit_scene, release_scene_to_pool
 from app.models import SceneStatus
 
 # Parses 'MERAsol0042seqID2210' → ('MERA', '0042', '2210')
@@ -56,14 +56,21 @@ class AnalystDashboard(Dashboard):
         self.main_content_layout.addWidget(QLabel("My Work Queue"))
 
         self.my_queue_table = _make_scene_table(col_count=5)
-        self.my_queue_table.setHorizontalHeaderLabels(["ID", "Rover", "Sol", "SeqID", "Status"])
+        self.my_queue_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID", "Status"])
         self.main_content_layout.addWidget(self.my_queue_table)
+        
+        # submit_for_review_button = QPushButton("Submit")
+        # submit_for_review_button.clicked.connect(self.handle_submit_for_review)
+        # self.main_content_layout.addWidget(submit_for_review_button)
+        remove_scene_button = QPushButton("Release Scene")
+        remove_scene_button.clicked.connect(self.handle_remove_scene)
+        self.main_content_layout.addWidget(remove_scene_button)
 
         # ── Ready for Peer Review ──────────────────────────────────────
         self.main_content_layout.addWidget(QLabel("Ready for Peer Review"))
 
         self.review_queue_table = _make_scene_table(col_count=4)
-        self.review_queue_table.setHorizontalHeaderLabels(["ID", "Rover", "Sol", "SeqID"])
+        self.review_queue_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID"])
         self.main_content_layout.addWidget(self.review_queue_table)
 
         claim_review_button = QPushButton("Claim for Review")
@@ -74,7 +81,7 @@ class AnalystDashboard(Dashboard):
         self.main_content_layout.addWidget(QLabel("Unclaimed Scenes"))
 
         self.scene_pool_table = _make_scene_table(col_count=4)
-        self.scene_pool_table.setHorizontalHeaderLabels(["ID", "Rover", "Sol", "SeqID"])
+        self.scene_pool_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID"])
         self.main_content_layout.addWidget(self.scene_pool_table)
 
         claim_pool_button = QPushButton("Claim Scene")
@@ -133,3 +140,24 @@ class AnalystDashboard(Dashboard):
         else:
             QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
         self.refresh_task_list()
+        
+    def handle_submit_for_review(self):
+        pass
+        
+    def handle_remove_scene(self):
+        if not self.my_queue_table.selectedItems():
+            QMessageBox.warning(self, "No Selection", "Select a scene to release.")
+            return
+        scene_id = int(self.my_queue_table.item(self.my_queue_table.currentRow(), 0).text())
+        try:
+            success = release_scene_to_pool(self.conn, scene_id, self.user['id'])
+        except ValueError as e:
+            QMessageBox.warning(self, "Release Failed", str(e))
+            self.refresh_task_list()
+            return
+        if success:
+            QMessageBox.information(self, "Released", f"Scene {scene_id} released and returned to shared pool.")
+        else:
+            QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
+        self.refresh_task_list()
+        
