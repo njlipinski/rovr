@@ -35,9 +35,8 @@ def _hide_id_col(table):
     table.setColumnHidden(0, True)
     
 
-def _populate_table(table, scenes, show_status=False):
-    """Fill a scene table with Rover/Sol/SeqID columns, plus optional Status.
-    Stores scene ID in column 0 (hidden via zero width isn't needed — ID is just col 0)."""
+def _populate_table(table, scenes, show_status=False, show_owner=False):
+    """Fill a scene table with Rover/Sol/SeqID columns, plus optional Status and Analyst 1."""
     table.setRowCount(len(scenes))
     for row, scene in enumerate(scenes):
         rover, sol, seq = _parse_name(scene['name'])
@@ -47,6 +46,9 @@ def _populate_table(table, scenes, show_status=False):
         table.setItem(row, 3, QTableWidgetItem(seq))
         if show_status:
             table.setItem(row, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+        if show_owner:
+            owner = scene['owner_username'] if scene['owner_username'] else '—'
+            table.setItem(row, 5, QTableWidgetItem(owner))
 
 
 class AnalystDashboard(Dashboard):
@@ -77,6 +79,7 @@ class AnalystDashboard(Dashboard):
 
         self.review_queue_table = _make_scene_table(col_count=4)
         self.review_queue_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID"])
+        _hide_id_col(self.review_queue_table)
         self.main_content_layout.addWidget(self.review_queue_table)
 
         claim_review_button = QPushButton("Claim for Review")
@@ -88,6 +91,7 @@ class AnalystDashboard(Dashboard):
 
         self.scene_pool_table = _make_scene_table(col_count=4)
         self.scene_pool_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID"])
+        _hide_id_col(self.scene_pool_table)
         self.main_content_layout.addWidget(self.scene_pool_table)
 
         claim_pool_button = QPushButton("Claim Scene")
@@ -105,7 +109,7 @@ class AnalystDashboard(Dashboard):
         analyst_id = self.user['id']
 
         my_scenes = get_analyst_queue(self.conn, analyst_id)
-        _populate_table(self.my_queue_table, my_scenes, show_status=True)
+        _populate_table(self.my_queue_table, my_scenes, show_status=True, show_owner=True)
 
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         _populate_table(self.review_queue_table, ready_scenes)
