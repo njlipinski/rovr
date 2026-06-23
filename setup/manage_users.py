@@ -79,7 +79,7 @@ def cmd_deactivate(conn, args):
     if not user['active']:
         print(f"'{args.username}' is already inactive.")
         sys.exit(1)
-    if not _confirm(f"Deactivate '{args.username}'? This will flag their open scenes as 'needs attention' (status 7) for supervisor reassignment."):
+    if not _confirm(f"Deactivate '{args.username}'? Their open scenes will be returned to the shared pools for other analysts."):
         print("Aborted.")
         return
     deactivate_user(conn, user['id'])

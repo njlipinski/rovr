@@ -30,10 +30,20 @@ def activate_user(conn, user_id):
     conn.commit()
 
 def deactivate_user(conn, user_id):
-    """deactivate user and flag all their open scenes as needs_attention (status 7)"""
+    """Deactivate user and return their open scenes to shared pools.
+    Status 1 and 4 go to unclaimed pool (0) with ownership cleared so a new analyst
+    can claim fresh. Status 3 goes back to peer review pool (2) with claim cleared
+    so a different analyst can review the existing ROI work."""
     conn.execute("""
-        UPDATE scenes SET status = 7, claimed_by = NULL, updated_at = datetime('now')
-        WHERE owner_id = ? AND status NOT IN (6, 7)
+        UPDATE scenes
+        SET status = 0, owner_id = NULL, assigned_to = NULL, claimed_by = NULL,
+            updated_at = datetime('now')
+        WHERE owner_id = ? AND status IN (1, 4)
+    """, (user_id,))
+    conn.execute("""
+        UPDATE scenes
+        SET status = 2, claimed_by = NULL, updated_at = datetime('now')
+        WHERE owner_id = ? AND status = 3
     """, (user_id,))
     conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
     conn.commit()
@@ -57,7 +67,6 @@ def update_user_password(conn, user_id, new_password_hash):
 #   4 needs revision   — Analyst 1's to-do
 #   5 pending super    — Supervisor Pool (shared, all supervisors)
 #   6 approved         — done
-#   7 needs attention  — supervisor attention queue
 
 def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
     """create a scene; owner_id and roi_filename are None for pool-imported scenes
@@ -73,7 +82,7 @@ def get_scene_by_id(conn, scene_id):
 
 def get_open_scenes_for_user(conn, user_id):
     return conn.execute(
-        "SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN (6, 7)",
+        "SELECT * FROM scenes WHERE owner_id = ? AND status != 6",
         (user_id,)
     ).fetchall()
 
@@ -171,10 +180,6 @@ def get_supervisor_queue(conn):
         LEFT JOIN users ON scenes.owner_id = users.id
         WHERE scenes.status = 5
     """).fetchall()
-
-def get_needs_attention_queue(conn):
-    """scenes flagged for supervisor reassignment (status 7)"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 7").fetchall()
 
 
 # ── Review functions ──────────────────────────────────────────────────────────

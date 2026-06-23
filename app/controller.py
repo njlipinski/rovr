@@ -2,7 +2,7 @@
 """controller logic"""
 from app.db import (
     get_scene_by_id, update_scene_status, log_review,
-    update_scene_assignment, claim_from_pool as db_claim_from_pool,
+    claim_from_pool as db_claim_from_pool,
     claim_for_review as db_claim_for_review, release_scene,
     set_peer_reviewer, set_supervisor, get_user_by_id
 )
@@ -69,13 +69,6 @@ def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
     else:
         update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
         log_review(conn, scene_id, supervisor_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION, comments)
-
-
-def reassign_scene(conn, scene_id, new_analyst_id, supervisor_id, comments):
-    """supervisor reassigns a needs-attention scene (7) to a different analyst"""
-    update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
-    update_scene_assignment(conn, scene_id, new_analyst_id)
-    log_review(conn, scene_id, supervisor_id, Stage.REASSIGNMENT, Decision.REASSIGNED, comments)
 
 
 def claim_scene_for_review(conn, scene_id, analyst_id):

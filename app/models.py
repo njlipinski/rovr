@@ -12,7 +12,6 @@ class SceneStatus:
     NEEDS_REVISION     = 4
     PENDING_SUPERVISOR = 5
     APPROVED           = 6
-    NEEDS_ATTENTION    = 7
 
     LABELS = {
         0: 'unclaimed',
@@ -22,7 +21,6 @@ class SceneStatus:
         4: 'needs revision',
         5: 'pending supervisor',
         6: 'approved',
-        7: 'needs attention',
     }
 
 
@@ -32,7 +30,6 @@ class Decision:
     SUBMITTED        = 'submitted'
     APPROVED         = 'approved'
     NEEDS_REVISION   = 'needs_revision'
-    REASSIGNED       = 'reassigned'
     FORCE_RELEASED   = 'force_released'
 
     VALID_REVIEW = (APPROVE, REQUEST_REVISION)
@@ -43,7 +40,6 @@ class Stage:
     RESUBMISSION      = 'resubmission'
     PEER_REVIEW       = 'peer_review'
     SUPERVISOR_REVIEW = 'supervisor_review'
-    REASSIGNMENT      = 'reassignment'
     ADMIN             = 'admin'
 
 
