@@ -59,9 +59,9 @@ class AnalystDashboard(Dashboard):
         self.my_queue_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID", "Status"])
         self.main_content_layout.addWidget(self.my_queue_table)
         
-        # submit_for_review_button = QPushButton("Submit")
-        # submit_for_review_button.clicked.connect(self.handle_submit_for_review)
-        # self.main_content_layout.addWidget(submit_for_review_button)
+        submit_for_review_button = QPushButton("Submit")
+        submit_for_review_button.clicked.connect(self.handle_submit_for_review)
+        self.main_content_layout.addWidget(submit_for_review_button)
         remove_scene_button = QPushButton("Release Scene")
         remove_scene_button.clicked.connect(self.handle_remove_scene)
         self.main_content_layout.addWidget(remove_scene_button)
@@ -142,7 +142,22 @@ class AnalystDashboard(Dashboard):
         self.refresh_task_list()
         
     def handle_submit_for_review(self):
-        pass
+        if not self.my_queue_table.selectedItems():
+            QMessageBox.warning(self, "No Selection", "Select a scene to submit.")
+            return
+        scene_id = int(self.my_queue_table.item(self.my_queue_table.currentRow(), 0).text())
+        try:
+            success = submit_scene(self.conn, scene_id, self.user['id'])
+        except ValueError as e:
+            QMessageBox.warning(self, "Submission Failed", str(e))
+            self.refresh_task_list()
+            return
+        if success:
+            QMessageBox.information(self, "Submitted", f"Scene {scene_id} submitted and added to peer review pool.")
+        else:
+            QMessageBox.warning(self, "Submission failed", "Please try again.")
+        self.refresh_task_list()
+        
         
     def handle_remove_scene(self):
         if not self.my_queue_table.selectedItems():
