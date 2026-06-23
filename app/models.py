@@ -3,16 +3,16 @@
 from dataclasses import dataclass
 from typing import Optional
 
-@dataclass
+
 class SceneStatus:
-    UNCLAIMED = 0
-    CLAIMED = 1
-    PENDING_REVIEW = 2
-    IN_REVIEW = 3
-    NEEDS_REVISION = 4
+    UNCLAIMED          = 0
+    CLAIMED            = 1
+    PENDING_REVIEW     = 2
+    IN_REVIEW          = 3
+    NEEDS_REVISION     = 4
     PENDING_SUPERVISOR = 5
-    APPROVED = 6
-    NEEDS_ATTENTION = 7
+    APPROVED           = 6
+    NEEDS_ATTENTION    = 7
 
     LABELS = {
         0: 'unclaimed',
@@ -25,32 +25,61 @@ class SceneStatus:
         7: 'needs attention',
     }
 
+
+class Decision:
+    APPROVE          = 'approve'
+    REQUEST_REVISION = 'request_revision'
+    SUBMITTED        = 'submitted'
+    APPROVED         = 'approved'
+    NEEDS_REVISION   = 'needs_revision'
+    REASSIGNED       = 'reassigned'
+    FORCE_RELEASED   = 'force_released'
+
+    VALID_REVIEW = (APPROVE, REQUEST_REVISION)
+
+
+class Stage:
+    SUBMISSION        = 'submission'
+    RESUBMISSION      = 'resubmission'
+    PEER_REVIEW       = 'peer_review'
+    SUPERVISOR_REVIEW = 'supervisor_review'
+    REASSIGNMENT      = 'reassignment'
+    ADMIN             = 'admin'
+
+
+class Role:
+    ANALYST    = 'analyst'
+    SUPERVISOR = 'supervisor'
+
+
 @dataclass
 class User:
     id: int
-    username: str  # same as display name, must be unique
-    active: bool   # whether the user account is active or deactivated
+    username: str
+    active: bool
     password_hash: str
-    role: str      # 'analyst' or 'supervisor'
+    role: str
+
 
 @dataclass
 class Scene:
     id: int
     name: str
-    roi_filename: str   # path to the .sel file on the Rice network drive
-    owner_id: int       # analyst 1 — who originally claimed and drew the scene; never changes
-    assigned_to: int    # current responsible analyst; updated only on supervisor reassignment
-    status: int         # 0–7, see SceneStatus
-    peer_reviewer_id: Optional[int] = None  # analyst 2 — set when peer review decision is submitted
-    supervisor_id: Optional[int] = None     # set when supervisor decision is submitted
-    claimed_by: Optional[int] = None        # holds claim lock for status 1 and 3; NULL otherwise
+    roi_filename: str                       # path to the .sel file on the R: drive
+    owner_id: int                           # analyst 1 — who originally claimed and drew the scene; never changes
+    assigned_to: int
+    status: int
+    peer_reviewer_id: Optional[int] = None
+    supervisor_id: Optional[int] = None
+    claimed_by: Optional[int] = None
+
 
 @dataclass
 class Review:
     id: int
     scene_id: int
     reviewer_id: int
-    timestamp: str          # when the review was made
-    stage: str              # 'submission', 'resubmission', 'peer_review', 'supervisor_review', 'reassignment', 'admin'
-    decision: str           # 'submitted', 'approved', 'needs_revision', 'reassigned', 'force_released'
-    comments: Optional[str] = None  # required on kickback; NULL on approve
+    timestamp: str
+    stage: str
+    decision: str
+    comments: Optional[str] = None

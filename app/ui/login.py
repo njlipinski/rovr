@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.auth import authenticate_user
+from app.models import Role
 
 
 class LoginUI(QWidget):
@@ -65,7 +66,7 @@ class LoginUI(QWidget):
         from app.ui.analyst_dash import AnalystDashboard
         from app.ui.supervisor_dash import SupervisorDashboard
 
-        if user['role'] == 'analyst':
+        if user['role'] == Role.ANALYST:
             self.dashboard = AnalystDashboard(self.conn, user)
         else:
             self.dashboard = SupervisorDashboard(self.conn, user)
