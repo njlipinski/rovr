@@ -24,14 +24,16 @@ def parse_scene_name(name):
 
 
 def make_scene_table(headers):
-    """Return a QTableWidget with the given column headers; col 0 (ID) is always hidden."""
+    """Return a sortable QTableWidget with the given column headers; col 0 (ID) is always hidden."""
     table = QTableWidget()
     table.setColumnCount(len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+    table.horizontalHeader().setSortIndicatorShown(True)
     table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     table.setColumnHidden(0, True)
+    table.setSortingEnabled(True)
     return table
 
 
@@ -153,6 +155,15 @@ class Dashboard(QMainWindow):
         bottom_layout.addWidget(self.main_content, stretch=1)
 
     # ── Shared helpers available to all subclasses ──────────────────────
+
+    @staticmethod
+    def _fill_table(table, rows, fill_fn):
+        """Populate a table safely: disables sorting during insert to prevent mid-fill reorders."""
+        table.setSortingEnabled(False)
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            fill_fn(i, row)
+        table.setSortingEnabled(True)
 
     def selected_id(self, table):
         """Return scene ID from hidden col 0 of the selected row, or None."""

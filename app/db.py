@@ -165,7 +165,12 @@ def get_ready_queue(conn):
 
 def get_supervisor_queue(conn):
     """scenes awaiting supervisor approval (status 5, shared pool)"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 5").fetchall()
+    return conn.execute("""
+        SELECT scenes.*, users.username AS owner_username
+        FROM scenes
+        LEFT JOIN users ON scenes.owner_id = users.id
+        WHERE scenes.status = 5
+    """).fetchall()
 
 def get_needs_attention_queue(conn):
     """scenes flagged for supervisor reassignment (status 7)"""
@@ -180,6 +185,32 @@ def log_review(conn, scene_id, reviewer_id, stage, decision, comments):
         (scene_id, reviewer_id, stage, decision, comments)
     )
     conn.commit()
+
+def get_all_scenes(conn):
+    """master list of every scene with all user fields resolved to usernames"""
+    return conn.execute("""
+        SELECT
+            s.id,
+            s.name,
+            s.scene_key,
+            s.roi_filename,
+            s.status,
+            s.submitted_at,
+            s.updated_at,
+            o.username  AS owner_username,
+            a.username  AS assigned_to_username,
+            pr.username AS peer_reviewer_username,
+            sv.username AS supervisor_username,
+            cb.username AS claimed_by_username
+        FROM scenes s
+        LEFT JOIN users o  ON s.owner_id          = o.id
+        LEFT JOIN users a  ON s.assigned_to        = a.id
+        LEFT JOIN users pr ON s.peer_reviewer_id   = pr.id
+        LEFT JOIN users sv ON s.supervisor_id      = sv.id
+        LEFT JOIN users cb ON s.claimed_by         = cb.id
+        ORDER BY s.id
+    """).fetchall()
+
 
 def get_scene_history(conn, scene_id):
     return conn.execute("""

@@ -87,34 +87,32 @@ class AnalystDashboard(Dashboard):
     def refresh_task_list(self):
         analyst_id = self.user['id']
 
-        my_scenes = get_analyst_queue(self.conn, analyst_id)
-        self.my_queue_table.setRowCount(len(my_scenes))
-        for row, scene in enumerate(my_scenes):
+        def fill_my_queue(i, scene):
             rover, sol, seq = parse_scene_name(scene['name'])
-            self.my_queue_table.setItem(row, 0, QTableWidgetItem(str(scene['id'])))
-            self.my_queue_table.setItem(row, 1, QTableWidgetItem(rover))
-            self.my_queue_table.setItem(row, 2, QTableWidgetItem(sol))
-            self.my_queue_table.setItem(row, 3, QTableWidgetItem(seq))
-            self.my_queue_table.setItem(row, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
-            self.my_queue_table.setItem(row, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.my_queue_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.my_queue_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.my_queue_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.my_queue_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.my_queue_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+            self.my_queue_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+        self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
 
+        def fill_review(i, scene):
+            rover, sol, seq = parse_scene_name(scene['name'])
+            self.review_queue_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.review_queue_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.review_queue_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.review_queue_table.setItem(i, 3, QTableWidgetItem(seq))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
-        self.review_queue_table.setRowCount(len(ready_scenes))
-        for row, scene in enumerate(ready_scenes):
-            rover, sol, seq = parse_scene_name(scene['name'])
-            self.review_queue_table.setItem(row, 0, QTableWidgetItem(str(scene['id'])))
-            self.review_queue_table.setItem(row, 1, QTableWidgetItem(rover))
-            self.review_queue_table.setItem(row, 2, QTableWidgetItem(sol))
-            self.review_queue_table.setItem(row, 3, QTableWidgetItem(seq))
+        self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
-        pool_scenes = get_scene_pool(self.conn)
-        self.scene_pool_table.setRowCount(len(pool_scenes))
-        for row, scene in enumerate(pool_scenes):
+        def fill_pool(i, scene):
             rover, sol, seq = parse_scene_name(scene['name'])
-            self.scene_pool_table.setItem(row, 0, QTableWidgetItem(str(scene['id'])))
-            self.scene_pool_table.setItem(row, 1, QTableWidgetItem(rover))
-            self.scene_pool_table.setItem(row, 2, QTableWidgetItem(sol))
-            self.scene_pool_table.setItem(row, 3, QTableWidgetItem(seq))
+            self.scene_pool_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.scene_pool_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.scene_pool_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.scene_pool_table.setItem(i, 3, QTableWidgetItem(seq))
+        self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         self._update_my_queue_tray()
         self._update_review_tray()
