@@ -4,7 +4,7 @@ from app.db import (
     get_scene_by_id, update_scene_status, log_review,
     claim_from_pool as db_claim_from_pool,
     claim_for_review as db_claim_for_review, release_scene,
-    set_peer_reviewer, set_supervisor, get_user_by_id
+    set_peer_reviewer, set_supervisor, get_user_by_id, reset_scene,
 )
 from app.models import SceneStatus, Decision, Stage
 
@@ -101,3 +101,19 @@ def force_release_scene(conn, scene_id, supervisor_id, comments=""):
     release_scene(conn, scene_id)
     log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.FORCE_RELEASED,
                comments or f"Claim by user {scene['claimed_by']} force-released")
+
+
+def supervisor_set_status(conn, scene_id, supervisor_id, new_status, comments=None):
+    """supervisor overrides a scene's status; clears the claim lock and logs the change"""
+    if new_status not in SceneStatus.LABELS:
+        raise ValueError(f"Invalid status: {new_status}")
+    update_scene_status(conn, scene_id, new_status)
+    note = comments or f"Status manually set to {SceneStatus.LABELS[new_status]}"
+    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.STATUS_OVERRIDE, note)
+
+
+def supervisor_reset_scene(conn, scene_id, supervisor_id, comments=None):
+    """supervisor fully resets a scene to unclaimed, wiping all ownership fields"""
+    reset_scene(conn, scene_id)
+    note = comments or "Scene reset to unclaimed by supervisor"
+    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.RESET, note)

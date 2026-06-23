@@ -1,5 +1,8 @@
 config.py
 *.sqlite
+*.md
 /app/__pycache__
 /app/ui/__pycache__
 /__pycache__
+/build/
+/dist/

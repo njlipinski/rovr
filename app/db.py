@@ -131,6 +131,21 @@ def update_scene_status(conn, scene_id, new_status):
     )
     conn.commit()
 
+def reset_scene(conn, scene_id):
+    """supervisor admin reset: wipe all ownership and return scene to unclaimed pool"""
+    conn.execute("""
+        UPDATE scenes
+        SET status = 0,
+            owner_id = NULL,
+            assigned_to = NULL,
+            peer_reviewer_id = NULL,
+            supervisor_id = NULL,
+            claimed_by = NULL,
+            updated_at = datetime('now')
+        WHERE id = ?
+    """, (scene_id,))
+    conn.commit()
+
 def update_scene_assignment(conn, scene_id, new_analyst_id):
     conn.execute("UPDATE scenes SET assigned_to = ? WHERE id = ?", (new_analyst_id, scene_id))
     conn.commit()

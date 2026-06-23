@@ -31,6 +31,8 @@ class Decision:
     APPROVED         = 'approved'
     NEEDS_REVISION   = 'needs_revision'
     FORCE_RELEASED   = 'force_released'
+    STATUS_OVERRIDE  = 'status_override'
+    RESET            = 'reset'
 
     VALID_REVIEW = (APPROVE, REQUEST_REVISION)
 

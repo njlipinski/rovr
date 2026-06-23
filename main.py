@@ -1,9 +1,15 @@
 # main.py
 import sys
+import os
+
+# When running as a frozen exe, config.py lives beside rovr.exe (not bundled).
+# Prepend the exe's directory so `import config` finds it there.
+if getattr(sys, 'frozen', False):
+    sys.path.insert(0, os.path.dirname(sys.executable))
+
 from PyQt6.QtWidgets import QApplication
 from app.db import get_db_connection, initialize_db
 from app.ui.login import LoginUI
-
 
 
 def main():

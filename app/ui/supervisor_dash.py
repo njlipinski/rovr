@@ -1,14 +1,51 @@
 """supervisor dashboard — approval queue and master scene list"""
-from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem
+import subprocess
+from PyQt6.QtWidgets import (
+    QPushButton, QSplitter, QMessageBox, QTableWidgetItem,
+    QDialog, QVBoxLayout, QLabel, QComboBox, QTextEdit, QDialogButtonBox,
+)
 from PyQt6.QtCore import Qt
+from config import ROI_STUDIO_PATH
 from app.ui.dashboard import (
     Dashboard, KickBackDialog, NotesDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_name, TRAY_HEIGHT
 )
 from app.db import get_supervisor_queue, get_all_scenes, get_scene_history
-from app.controller import supervisor_review_scene
+from app.controller import supervisor_review_scene, supervisor_set_status, supervisor_reset_scene
 from app.models import SceneStatus, Decision
+
+
+class SetStatusDialog(QDialog):
+    """Dialog for supervisor to select a new status for a scene."""
+    def __init__(self, current_status, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set Scene Status")
+        self.setMinimumWidth(360)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Current status: {SceneStatus.LABELS[current_status]}"))
+        layout.addWidget(QLabel("New status:"))
+        self.combo = QComboBox()
+        for status, label in SceneStatus.LABELS.items():
+            if status != current_status:
+                self.combo.addItem(label, status)
+        layout.addWidget(self.combo)
+        layout.addWidget(QLabel("Notes (optional):"))
+        self.notes = QTextEdit()
+        self.notes.setFixedHeight(72)
+        layout.addWidget(self.notes)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_status(self):
+        return self.combo.currentData()
+
+    def get_notes(self):
+        return self.notes.toPlainText().strip() or None
 
 # Master list columns: header label → field name on the query row
 _MASTER_COLS = [
@@ -49,8 +86,9 @@ class SupervisorDashboard(Dashboard):
 
         # Master scene list
         self.master_table = make_scene_table([h for h, _ in _MASTER_COLS])
-        master_tray = make_button_tray()  # empty tray for consistent spacing
-        master_section = make_section("All Scenes", self.master_table, master_tray)
+        self.master_tray = make_button_tray()
+        self.master_table.itemSelectionChanged.connect(self._update_master_tray)
+        master_section = make_section("All Scenes", self.master_table, self.master_tray)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(approval_section)
@@ -93,6 +131,7 @@ class SupervisorDashboard(Dashboard):
         self._fill_table(self.master_table, get_all_scenes(self.conn), fill_master)
 
         self._update_approval_tray()
+        self._update_master_tray()
 
     # ── Button tray ─────────────────────────────────────────────────────
 
@@ -110,6 +149,18 @@ class SupervisorDashboard(Dashboard):
             btn.clicked.connect(getattr(self, handler))
             self.approval_tray.layout().addWidget(btn)
 
+    def _update_master_tray(self):
+        clear_tray(self.master_tray)
+        if self.selected_id(self.master_table) is None:
+            return
+        for label, handler in [
+            ("Set Status",   "handle_set_status"),
+            ("Reset Scene",  "handle_reset_scene"),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(getattr(self, handler))
+            self.master_tray.layout().addWidget(btn)
+
     # ── Handlers ────────────────────────────────────────────────────────
 
     def _approval_scene_id(self):
@@ -122,7 +173,10 @@ class SupervisorDashboard(Dashboard):
         scene_id = self._approval_scene_id()
         if scene_id is None:
             return
-        pass  # TODO: launch ROI Studio
+        try:
+            subprocess.Popen([ROI_STUDIO_PATH])
+        except OSError as e:
+            QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
     def handle_approve(self):
         scene_id = self._approval_scene_id()
@@ -164,3 +218,40 @@ class SupervisorDashboard(Dashboard):
         ])
         history = get_scene_history(self.conn, scene_id)
         NotesDialog(scene_name, history, self).exec()
+
+    def handle_set_status(self):
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is None:
+            return
+        current = self.selected_status(self.master_table)
+        if current is None:
+            return
+        dialog = SetStatusDialog(current, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            supervisor_set_status(self.conn, scene_id, self.user['id'],
+                                  dialog.get_status(), dialog.get_notes())
+        except ValueError as e:
+            QMessageBox.warning(self, "Set Status Failed", str(e))
+        self.refresh_task_list()
+
+    def handle_reset_scene(self):
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is None:
+            return
+        row = self.master_table.currentRow()
+        cells = [self.master_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        confirm = QMessageBox.question(
+            self, "Reset Scene",
+            f"Reset '{scene_name}'?\n\nThis will clear all ownership and return it to unclaimed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            supervisor_reset_scene(self.conn, scene_id, self.user['id'])
+        except ValueError as e:
+            QMessageBox.warning(self, "Reset Failed", str(e))
+        self.refresh_task_list()

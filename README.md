@@ -23,7 +23,7 @@ A PyQt6 desktop application for managing multi-stage validation of ROI (Region o
 
 ## Quick Start
 
-**Prerequisites:** Python 3.10+, access to the Rice network drive, ROI Studio installed.
+**Prerequisites:** Python 3.10+, access to the R:\Rice\Pancam network drive, ROI Studio installed.
 
 ```bash
 # 1. Clone the repo
