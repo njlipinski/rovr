@@ -142,10 +142,14 @@ def get_scene_pool(conn):
     return conn.execute("SELECT * FROM scenes WHERE status = 0").fetchall()
 
 def get_analyst_queue(conn, user_id):
-    """scenes in analyst's personal to-do: claimed (1) and needs revision (4)"""
+    """scenes in analyst's personal to-do: owned (1, 4) and claimed for peer review (3)"""
     return conn.execute(
-        "SELECT * FROM scenes WHERE status IN (1, 4) AND assigned_to = ?",
-        (user_id,)
+        """SELECT scenes.*, users.username AS owner_username
+           FROM scenes
+           LEFT JOIN users ON scenes.owner_id = users.id
+           WHERE (scenes.status IN (1, 4) AND scenes.assigned_to = ?)
+              OR (scenes.status = 3 AND scenes.claimed_by = ?)""",
+        (user_id, user_id)
     ).fetchall()
 
 def get_peer_review_claimed(conn, user_id):

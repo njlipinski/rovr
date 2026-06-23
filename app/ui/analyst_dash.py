@@ -30,6 +30,11 @@ def _make_scene_table(col_count=4):
     return table
 
 
+def _hide_id_col(table):
+    """Hide col 0 (ID) — still present for internal use, just not shown."""
+    table.setColumnHidden(0, True)
+    
+
 def _populate_table(table, scenes, show_status=False):
     """Fill a scene table with Rover/Sol/SeqID columns, plus optional Status.
     Stores scene ID in column 0 (hidden via zero width isn't needed — ID is just col 0)."""
@@ -55,8 +60,9 @@ class AnalystDashboard(Dashboard):
         # ── My Work Queue ──────────────────────────────────────────────
         self.main_content_layout.addWidget(QLabel("My Work Queue"))
 
-        self.my_queue_table = _make_scene_table(col_count=5)
-        self.my_queue_table.setHorizontalHeaderLabels(["ID","Rover", "Sol", "SeqID", "Status"])
+        self.my_queue_table = _make_scene_table(col_count=6)
+        self.my_queue_table.setHorizontalHeaderLabels(["ID", "Rover", "Sol", "SeqID", "Status", "Analyst 1"])
+        _hide_id_col(self.my_queue_table)
         self.main_content_layout.addWidget(self.my_queue_table)
         
         submit_for_review_button = QPushButton("Submit")
@@ -147,15 +153,12 @@ class AnalystDashboard(Dashboard):
             return
         scene_id = int(self.my_queue_table.item(self.my_queue_table.currentRow(), 0).text())
         try:
-            success = submit_scene(self.conn, scene_id, self.user['id'])
+            submit_scene(self.conn, scene_id, self.user['id'])
         except ValueError as e:
             QMessageBox.warning(self, "Submission Failed", str(e))
             self.refresh_task_list()
             return
-        if success:
-            QMessageBox.information(self, "Submitted", f"Scene {scene_id} submitted and added to peer review pool.")
-        else:
-            QMessageBox.warning(self, "Submission failed", "Please try again.")
+        QMessageBox.information(self, "Submitted", f"Scene {scene_id} submitted.")
         self.refresh_task_list()
         
         
@@ -165,14 +168,11 @@ class AnalystDashboard(Dashboard):
             return
         scene_id = int(self.my_queue_table.item(self.my_queue_table.currentRow(), 0).text())
         try:
-            success = release_scene_to_pool(self.conn, scene_id, self.user['id'])
+            release_scene_to_pool(self.conn, scene_id, self.user['id'])
         except ValueError as e:
             QMessageBox.warning(self, "Release Failed", str(e))
             self.refresh_task_list()
             return
-        if success:
-            QMessageBox.information(self, "Released", f"Scene {scene_id} released and returned to shared pool.")
-        else:
-            QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
+        QMessageBox.information(self, "Released", f"Scene {scene_id} released and returned to shared pool.")
         self.refresh_task_list()
         
