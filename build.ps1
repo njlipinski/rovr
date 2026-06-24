@@ -5,8 +5,6 @@
 # Reads the version from VERSION, writes app/version.py, builds the exe,
 # creates a git tag, and deploys to the R drive if available.
 
-$ErrorActionPreference = "Stop"
-
 # Read version
 $version = (Get-Content VERSION).Trim()
 $tag = "v$version"
@@ -18,8 +16,8 @@ Set-Content -Path app\version.py -Value "__version__ = '$version'" -Encoding utf
 
 # Build exe
 python -m PyInstaller rovr.spec
-if (-not $?) {
-    Write-Error "PyInstaller build failed."
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "PyInstaller build failed (exit code $LASTEXITCODE)."
     exit 1
 }
 

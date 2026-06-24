@@ -1,4 +1,5 @@
 config.py
+notes.txt
 *.sqlite
 *.md
 /app/__pycache__
