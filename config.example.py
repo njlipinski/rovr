@@ -1,15 +1,17 @@
 # config.example.py
 """configuration settings for ROVR"""
 
-# Copy this file to config.py and update the paths for your machine.
+# Copy this file to config.py — no edits needed if rovr.exe and config.py
+# are in the same folder in R:\Rice\Pancam (the default setup).
 # Do not commit config.py to version control.
 
-# Path to the SQLite database file — lives at the Pancam level, one folder
-# above the rover directories (MERA / MERB).
-DB_PATH = r"R:\Rice\Pancam\rovr.sqlite"
+import os
+_BASE = os.path.dirname(os.path.abspath(__file__))
 
-# Root Pancam directory on the Rice drive.
+# SQLite database file, beside rovr.exe on the Rice drive.
+DB_PATH = os.path.join(_BASE, "rovr.sqlite")
+
+# Root Pancam directory — the folder containing rovr.exe on the Rice drive.
 # The importer expects rover subfolders (MERA, MERB) directly inside this path,
 # each containing an iof/ subdirectory with sol#### folders.
-PANCAM_PATH = r"R:\Rice\Pancam"
-
+PANCAM_PATH = _BASE
