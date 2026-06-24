@@ -15,7 +15,7 @@ A PyQt6 desktop application for managing multi-stage validation of ROI (Region o
 |-----------|------------|
 | Language | Python 3 |
 | GUI | PyQt6 |
-| Database | SQLite (WAL mode, stored on shared Rice drive) |
+| Database | SQLite (stored on R:\Rice\Pancam) |
 | Auth | bcrypt |
 | Distribution | Single `.exe` via PyInstaller |
 | ROI Tool | ROI Studio (`.sel` files) |
@@ -35,7 +35,7 @@ pip install -r setup/requirements.txt
 
 # 3. Configure paths
 copy config.example.py config.py
-# Edit config.py: set DB_PATH and ROI_STUDIO_PATH
+# Edit config.py: set DB_PATH to point to R:\Rice\Pancam\rovr.sqlite
 
 # 4. Create initial users
 python setup/manage_users.py create <username> --role supervisor
@@ -58,7 +58,7 @@ python setup/manage_users.py deactivate <username>
 python setup/manage_users.py activate <username>
 ```
 
-Deactivating a user automatically flags all their open scenes as `needs_attention` for supervisor reassignment.
+Deactivating a user automatically returns all their open scenes to the shared pools.
 
 ## Documentation
 
