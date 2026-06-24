@@ -1,8 +1,9 @@
 """analyst dashboard — work queue, peer review pool, and scene pool"""
+import os
 import subprocess
-from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem
+from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem, QFileDialog
 from PyQt6.QtCore import Qt
-from config import ROI_STUDIO_PATH
+from app.local_settings import get_roi_studio_path, set_roi_studio_path
 from app.ui.dashboard import (
     Dashboard, KickBackDialog, NotesDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
@@ -160,8 +161,16 @@ class AnalystDashboard(Dashboard):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
+        path = get_roi_studio_path()
+        if not path or not os.path.isfile(path):
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Locate ROI Studio", "", "Executables (*.exe)"
+            )
+            if not path:
+                return
+            set_roi_studio_path(path)
         try:
-            subprocess.Popen([ROI_STUDIO_PATH])
+            subprocess.Popen([path])
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 

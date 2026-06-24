@@ -13,5 +13,3 @@ DB_PATH = r"R:\Rice\Pancam\rovr.sqlite"
 # each containing an iof/ subdirectory with sol#### folders.
 PANCAM_PATH = r"R:\Rice\Pancam"
 
-# Path to ROI Studio executable.
-ROI_STUDIO_PATH = r"C:\Program Files\ROI Studio\ROI Studio.exe"
