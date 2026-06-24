@@ -2,10 +2,17 @@
 import sys
 import os
 
-# When running as a frozen exe, config.py lives beside rovr.exe (not bundled).
-# Prepend the exe's directory so `import config` finds it there.
+# When frozen, config.py lives beside the exe/app (not bundled).
+# On macOS, sys.executable is deep inside rovr.app/Contents/MacOS/ — walk up
+# past the .app bundle to find the folder that actually contains config.py.
 if getattr(sys, 'frozen', False):
-    sys.path.insert(0, os.path.dirname(sys.executable))
+    if sys.platform == 'darwin':
+        _p = sys.executable
+        while _p and not _p.endswith('.app'):
+            _p = os.path.dirname(_p)
+        sys.path.insert(0, os.path.dirname(_p))
+    else:
+        sys.path.insert(0, os.path.dirname(sys.executable))
 
 try:
     from PyQt6.QtWidgets import QApplication

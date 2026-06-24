@@ -6,3 +6,4 @@ config.py
 /__pycache__
 /build/
 /dist/
+/app/version.py

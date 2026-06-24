@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -r setup/requirements.txt pyinstaller
+
+      - name: Write version module
+        run: |
+          $version = (Get-Content VERSION).Trim()
+          Set-Content -Path app/version.py -Value "__version__ = '$version'" -Encoding utf8
+        shell: pwsh
+
+      - name: Build exe
+        run: python -m PyInstaller rovr.spec
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ROVR ${{ github.ref_name }}
+          files: dist/rovr.exe
+          generate_release_notes: true
+
+  build-macos:
+    runs-on: macos-13  # Intel — runs on both Intel and Apple Silicon via Rosetta 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -r setup/requirements.txt pyinstaller
+
+      - name: Write version module
+        run: echo "__version__ = '$(cat VERSION)'" > app/version.py
+
+      - name: Build app bundle
+        run: python -m PyInstaller rovr.spec
+
+      - name: Zip app bundle
+        run: cd dist && zip -r rovr-mac.zip rovr.app
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/rovr-mac.zip

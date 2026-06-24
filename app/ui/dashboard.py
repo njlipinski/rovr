@@ -11,6 +11,10 @@ from PyQt6.QtCore import Qt
 from app.models import SceneStatus
 from app.local_settings import get_roi_studio_path, set_roi_studio_path
 from app.db import get_scene_history
+try:
+    from app.version import __version__
+except ImportError:
+    __version__ = "dev"
 
 # Parses 'MERAsol0042seqID2210' → ('MERA', '0042', '2210')
 _NAME_RE = re.compile(r'^([A-Z]+)sol(\d{4})seqID(\d+)$')
@@ -126,7 +130,7 @@ class Dashboard(QMainWindow):
         super().__init__()
         self.conn = conn
         self.user = user
-        self.setWindowTitle(f"ROVR — {user['username']}")
+        self.setWindowTitle(f"ROVR {__version__} — {user['username']}")
         self.setMinimumSize(800, 500)
 
         central_widget = QWidget()
