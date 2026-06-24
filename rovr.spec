@@ -54,3 +54,11 @@ exe = EXE(
     entitlements_file=None,
     icon=None,
 )
+
+# macOS only — produces dist/rovr.app; ignored on Windows
+app = BUNDLE(
+    exe,
+    name='rovr.app',
+    icon=None,
+    bundle_identifier='edu.wwu.marsresearchgroup.rovr',
+)
