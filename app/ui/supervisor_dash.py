@@ -1,18 +1,15 @@
 """supervisor dashboard — approval queue and master scene list"""
-import os
-import subprocess
 from PyQt6.QtWidgets import (
-    QPushButton, QSplitter, QMessageBox, QTableWidgetItem, QFileDialog,
+    QPushButton, QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QTextEdit, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt
-from app.local_settings import get_roi_studio_path, set_roi_studio_path
 from app.ui.dashboard import (
-    Dashboard, KickBackDialog, NotesDialog,
+    Dashboard, KickBackDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_name, TRAY_HEIGHT
 )
-from app.db import get_supervisor_queue, get_all_scenes, get_scene_history
+from app.db import get_supervisor_queue, get_all_scenes
 from app.controller import supervisor_review_scene, supervisor_set_status, supervisor_reset_scene
 from app.models import SceneStatus, Decision
 
@@ -155,8 +152,10 @@ class SupervisorDashboard(Dashboard):
         if self.selected_id(self.master_table) is None:
             return
         for label, handler in [
-            ("Set Status",   "handle_set_status"),
-            ("Reset Scene",  "handle_reset_scene"),
+            ("Open in ROI Studio", "handle_master_open_roi"),
+            ("See Notes",          "handle_master_see_notes"),
+            ("Set Status",         "handle_set_status"),
+            ("Reset Scene",        "handle_reset_scene"),
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(getattr(self, handler))
@@ -171,21 +170,9 @@ class SupervisorDashboard(Dashboard):
         return scene_id
 
     def handle_open_roi(self):
-        scene_id = self._approval_scene_id()
-        if scene_id is None:
+        if self._approval_scene_id() is None:
             return
-        path = get_roi_studio_path()
-        if not path or not os.path.isfile(path):
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Locate ROI Studio", "", "Executables (*.exe)"
-            )
-            if not path:
-                return
-            set_roi_studio_path(path)
-        try:
-            subprocess.Popen([path])
-        except OSError as e:
-            QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
+        super().handle_open_roi()
 
     def handle_approve(self):
         scene_id = self._approval_scene_id()
@@ -222,11 +209,23 @@ class SupervisorDashboard(Dashboard):
         if scene_id is None:
             return
         row = self.approval_table.currentRow()
-        scene_name = " ".join([
-            self.approval_table.item(row, c).text() for c in (1, 2, 3)
-        ])
-        history = get_scene_history(self.conn, scene_id)
-        NotesDialog(scene_name, history, self).exec()
+        cells = [self.approval_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
+
+    def handle_master_open_roi(self):
+        if self.selected_id(self.master_table) is None:
+            return
+        super().handle_open_roi()
+
+    def handle_master_see_notes(self):
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is None:
+            return
+        row = self.master_table.currentRow()
+        cells = [self.master_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
 
     def handle_set_status(self):
         scene_id = self.selected_id(self.master_table)

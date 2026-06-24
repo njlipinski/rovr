@@ -1,12 +1,16 @@
 """base dashboard — shared layout, widgets, and utilities for all dashboard types"""
+import os
 import re
+import subprocess
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
-    QDialog, QTextEdit, QDialogButtonBox, QMessageBox
+    QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt
 from app.models import SceneStatus
+from app.local_settings import get_roi_studio_path, set_roi_studio_path
+from app.db import get_scene_history
 
 # Parses 'MERAsol0042seqID2210' → ('MERA', '0042', '2210')
 _NAME_RE = re.compile(r'^([A-Z]+)sol(\d{4})seqID(\d+)$')
@@ -185,6 +189,26 @@ class Dashboard(QMainWindow):
             if name == label:
                 return status
         return None
+
+    def handle_open_roi(self):
+        """Launch ROI Studio. Subclasses should override to guard on selection first."""
+        path = get_roi_studio_path()
+        if not path or not os.path.isfile(path):
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Locate ROI Studio", "", "Executables (*.exe)"
+            )
+            if not path:
+                return
+            set_roi_studio_path(path)
+        try:
+            subprocess.Popen([path])
+        except OSError as e:
+            QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
+
+    def _show_notes(self, scene_id, scene_name):
+        """Fetch review history and show NotesDialog."""
+        history = get_scene_history(self.conn, scene_id)
+        NotesDialog(scene_name, history, self).exec()
 
     def handle_logout(self):
         from app.ui.login import LoginUI

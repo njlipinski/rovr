@@ -1,15 +1,12 @@
 """analyst dashboard — work queue, peer review pool, and scene pool"""
-import os
-import subprocess
-from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem, QFileDialog
+from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import Qt
-from app.local_settings import get_roi_studio_path, set_roi_studio_path
 from app.ui.dashboard import (
-    Dashboard, KickBackDialog, NotesDialog,
+    Dashboard, KickBackDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_name, TRAY_HEIGHT
 )
-from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_scene_history
+from app.db import get_analyst_queue, get_ready_queue, get_scene_pool
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
     release_scene_to_pool, peer_review_scene
@@ -158,21 +155,9 @@ class AnalystDashboard(Dashboard):
         return scene_id
 
     def handle_open_roi(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
+        if self._my_queue_scene_id() is None:
             return
-        path = get_roi_studio_path()
-        if not path or not os.path.isfile(path):
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Locate ROI Studio", "", "Executables (*.exe)"
-            )
-            if not path:
-                return
-            set_roi_studio_path(path)
-        try:
-            subprocess.Popen([path])
-        except OSError as e:
-            QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
+        super().handle_open_roi()
 
     def handle_submit(self):
         scene_id = self._my_queue_scene_id()
@@ -224,11 +209,9 @@ class AnalystDashboard(Dashboard):
         if scene_id is None:
             return
         row = self.my_queue_table.currentRow()
-        scene_name = " ".join([
-            self.my_queue_table.item(row, c).text() for c in (1, 2, 3)
-        ])
-        history = get_scene_history(self.conn, scene_id)
-        NotesDialog(scene_name, history, self).exec()
+        cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
 
     def handle_release(self):
         scene_id = self._my_queue_scene_id()
