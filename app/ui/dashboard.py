@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from app.models import SceneStatus
 from app.local_settings import get_roi_studio_path, set_roi_studio_path
-from app.db import get_scene_history
+from app.db import get_scene_thread, add_note, get_scene_by_id
+from config import PANCAM_PATH
 try:
     from app.version import __version__
 except ImportError:
@@ -102,27 +103,76 @@ class KickBackDialog(QDialog):
         return self.text_edit.toPlainText().strip()
 
 
+_DECISION_LABEL = {
+    'request_revision': 'Kick Back',
+    'status_override':  'Status Override',
+    'submitted':        'Submitted',
+    'reset':            'Reset',
+    'approve':          'Approve',
+    'approved':         'Approved',
+    'force_released':   'Force Released',
+}
+
+
 class NotesDialog(QDialog):
-    """Read-only dialog showing all review notes for a scene, oldest first."""
-    def __init__(self, scene_name, history, parent=None):
+    """Read-write dialog showing the note thread for a scene and allowing new notes."""
+    def __init__(self, conn, scene_id, scene_name, author_id, parent=None):
         super().__init__(parent)
+        self.conn = conn
+        self.scene_id = scene_id
+        self.author_id = author_id
         self.setWindowTitle(f"Notes — {scene_name}")
-        self.setMinimumSize(500, 300)
+        self.setMinimumSize(520, 440)
         layout = QVBoxLayout(self)
-        text = QTextEdit()
-        text.setReadOnly(True)
-        notes = [row for row in history if row['comments']]
-        if notes:
-            text.setPlainText(
-                "\n\n---\n\n".join(
-                    f"[{row['timestamp']}]  {row['reviewer_name']}  ({row['stage']})\n{row['comments']}"
-                    for row in notes
-                )
+
+        self.display = QTextEdit()
+        self.display.setReadOnly(True)
+        layout.addWidget(self.display)
+
+        layout.addWidget(QLabel("Add a note:"))
+        self.input = QTextEdit()
+        self.input.setFixedHeight(80)
+        self.input.setPlaceholderText("Type a note...")
+        layout.addWidget(self.input)
+
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        add_btn = QPushButton("Add Note")
+        add_btn.clicked.connect(self._on_add)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addStretch()
+        btn_layout.addWidget(add_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addWidget(btn_row)
+
+        self._refresh()
+
+    def _refresh(self):
+        thread = get_scene_thread(self.conn, self.scene_id)
+        if not thread:
+            self.display.setPlainText("No notes yet.")
+            return
+        parts = []
+        for row in thread:
+            if row['type'] == 'note':
+                tag = 'Note'
+            else:
+                tag = _DECISION_LABEL.get(row['decision'], row['decision'])
+            parts.append(
+                f"[{row['timestamp']}]  {row['author_name']}  ({tag})\n{row['content']}"
             )
-        layout.addWidget(text)
-        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        close.rejected.connect(self.reject)
-        layout.addWidget(close)
+        self.display.setPlainText("\n\n---\n\n".join(parts))
+
+    def _on_add(self):
+        body = self.input.toPlainText().strip()
+        if not body:
+            QMessageBox.warning(self, "Empty Note", "Please enter some text before adding a note.")
+            return
+        add_note(self.conn, self.scene_id, self.author_id, body)
+        self.input.clear()
+        self._refresh()
 
 
 class Dashboard(QMainWindow):
@@ -137,10 +187,14 @@ class Dashboard(QMainWindow):
         self.setCentralWidget(central_widget)
 
         outer_layout = QVBoxLayout(central_widget)
+        outer_layout.setContentsMargins(6, 4, 6, 4)
+        outer_layout.setSpacing(4)
 
         # Topbar
         topbar = QWidget()
+        topbar.setFixedHeight(32)
         topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(2, 0, 2, 0)
         topbar_layout.addWidget(QLabel("ROVR"))
         topbar_layout.addStretch()
         topbar_layout.addWidget(QLabel(self.user['username']))
@@ -152,14 +206,19 @@ class Dashboard(QMainWindow):
 
         # Bottom: sidebar + main content
         bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(4)
         outer_layout.addLayout(bottom_layout)
 
         self.sidebar = QWidget()
         self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.addWidget(self.sidebar, stretch=0)
 
         self.main_content = QWidget()
         self.main_content_layout = QVBoxLayout(self.main_content)
+        self.main_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_content_layout.setSpacing(4)
         bottom_layout.addWidget(self.main_content, stretch=1)
 
     # ── Shared helpers available to all subclasses ──────────────────────
@@ -194,8 +253,8 @@ class Dashboard(QMainWindow):
                 return status
         return None
 
-    def handle_open_roi(self):
-        """Launch ROI Studio. Subclasses should override to guard on selection first."""
+    def handle_open_roi(self, scene_id):
+        """Launch ROI Studio and open the given scene."""
         path = get_roi_studio_path()
         if not path or not os.path.isfile(path):
             path, _ = QFileDialog.getOpenFileName(
@@ -204,15 +263,25 @@ class Dashboard(QMainWindow):
             if not path:
                 return
             set_roi_studio_path(path)
+
+        args = [path]
+        scene = get_scene_by_id(self.conn, scene_id)
+        if scene:
+            # scene_key: "MERB/sol0045/seqID2210"
+            rover, sol_dir, seq_part = scene['scene_key'].split('/')
+            seq_id = 'P' + seq_part.replace('seqID', '')
+            folder_path = os.path.join(PANCAM_PATH, rover, 'iof', sol_dir)
+            args += [folder_path, seq_id, '0', 'PCAM']  # obs_ix=0: single-pointing assumption
+            if scene['roi_filename']:
+                args.append(scene['roi_filename'])
+
         try:
-            subprocess.Popen([path])
+            subprocess.Popen(args)
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
     def _show_notes(self, scene_id, scene_name):
-        """Fetch review history and show NotesDialog."""
-        history = get_scene_history(self.conn, scene_id)
-        NotesDialog(scene_name, history, self).exec()
+        NotesDialog(self.conn, scene_id, scene_name, self.user['id'], self).exec()
 
     def handle_logout(self):
         from app.ui.login import LoginUI

@@ -178,6 +178,37 @@ def wipe_scenes(conn):
     conn.execute("DELETE FROM scenes")
     conn.commit()
     print(f"Wiped {scene_count} scene(s) and {review_count} review(s). Users untouched.")
+    
+    
+def build_folders(pancam_root, subfolder_name):
+    """Mirror each rover's iof/sol#### tree into rover/<subfolder_name>/sol####.
+
+    Creates missing directories; skips any that already exist. No-op safe.
+    """
+    pancam_path = Path(pancam_root)
+    rovers = ["MERA", "MERB"]
+    for rover in rovers:
+        iof_root = pancam_path / rover / "iof"
+        if not iof_root.exists():
+            print(f"Skipping {rover}: {iof_root} does not exist.")
+            continue
+
+        target_root = pancam_path / rover / subfolder_name
+        sol_dirs = sorted(
+            d for d in iof_root.iterdir()
+            if d.is_dir() and _sol_num(d.name) is not None
+        )
+        created = skipped = 0
+        for sol_dir in sol_dirs:
+            target = target_root / sol_dir.name
+            if target.exists():
+                skipped += 1
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+                created += 1
+        print(f"{rover}/{subfolder_name}: {created} created, {skipped} already existed")
+
+
 
 
 def main():
@@ -197,9 +228,20 @@ def main():
         help="Show what would be imported without writing to the database",
     )
     parser.add_argument(
-        "--reimport",
+        "--build-folders",
         action="store_true",
-        help="Wipe all scenes and reviews, then re-import from scratch. Users are not affected.",
+        help="Mirror iof/sol#### tree into a new subfolder (see --subfolder).",
+    )
+    parser.add_argument(
+        "--subfolder",
+        default="working",
+        metavar="NAME",
+        help="Subfolder name to create under each rover root (default: working).",
+    )
+    parser.add_argument(
+        "--wipe",
+        action="store_true",
+        help="Wipe all scenes and reviews. Users are not affected.",
     )
     args = parser.parse_args()
 
@@ -212,11 +254,15 @@ def main():
         print(f"Error: '{args.path}' does not exist.")
         sys.exit(1)
 
+    if args.build_folders:
+        build_folders(args.path, args.subfolder)
+        return
+
     initialize_db()
     conn = get_db_connection()
     try:
-        if args.reimport:
-            print("WARNING: --reimport will delete all scenes and reviews from the database.")
+        if args.wipe:
+            print("WARNING: --wipe will delete all scenes and reviews from the database.")
             print("Users will not be affected. This cannot be undone.")
             confirm = input("Type YES to continue: ").strip()
             if confirm != "YES":
@@ -224,7 +270,6 @@ def main():
                 sys.exit(0)
             wipe_scenes(conn)
             print()
-        import_scenes(conn, args.path, dry_run=args.dry_run)
     finally:
         conn.close()
 

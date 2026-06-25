@@ -6,7 +6,7 @@ from app.ui.dashboard import (
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_name, TRAY_HEIGHT
 )
-from app.db import get_analyst_queue, get_ready_queue, get_scene_pool
+from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
     release_scene_to_pool, peer_review_scene
@@ -54,6 +54,14 @@ class AnalystDashboard(Dashboard):
         self.my_queue_table.itemSelectionChanged.connect(self._update_my_queue_tray)
         my_section = make_section("My Work Queue", self.my_queue_table, self.my_queue_tray)
 
+        # In Progress — scenes I've contributed to that are still moving
+        self.in_progress_table = make_scene_table(
+            ["ID", "Rover", "Sol", "SeqID", "My Role", "Status", "Current Holder"]
+        )
+        self.in_progress_tray = make_button_tray()
+        self.in_progress_table.itemSelectionChanged.connect(self._update_in_progress_tray)
+        in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
+
         # Ready for Peer Review
         self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID"])
         self.review_queue_tray = make_button_tray()
@@ -66,13 +74,23 @@ class AnalystDashboard(Dashboard):
         self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
         pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(my_section)
-        splitter.addWidget(review_section)
-        splitter.addWidget(pool_section)
-        splitter.setStretchFactor(0, 2)
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.addWidget(my_section)
+        left_splitter.addWidget(in_progress_section)
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 1)
+
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.addWidget(review_section)
+        right_splitter.addWidget(pool_section)
+        right_splitter.setStretchFactor(0, 1)
+        right_splitter.setStretchFactor(1, 1)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left_splitter)
+        splitter.addWidget(right_splitter)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 2)
 
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_task_list)
@@ -97,6 +115,17 @@ class AnalystDashboard(Dashboard):
             self.my_queue_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
         self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
 
+        def fill_in_progress(i, scene):
+            rover, sol, seq = parse_scene_name(scene['name'])
+            self.in_progress_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.in_progress_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.in_progress_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.in_progress_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.in_progress_table.setItem(i, 4, QTableWidgetItem(scene['my_role']))
+            self.in_progress_table.setItem(i, 5, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+            self.in_progress_table.setItem(i, 6, QTableWidgetItem(scene['current_holder'] or '—'))
+        self._fill_table(self.in_progress_table, get_analyst_in_progress(self.conn, analyst_id), fill_in_progress)
+
         def fill_review(i, scene):
             rover, sol, seq = parse_scene_name(scene['name'])
             self.review_queue_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
@@ -115,6 +144,7 @@ class AnalystDashboard(Dashboard):
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         self._update_my_queue_tray()
+        self._update_in_progress_tray()
         self._update_review_tray()
         self._update_pool_tray()
 
@@ -129,6 +159,14 @@ class AnalystDashboard(Dashboard):
             btn = QPushButton(label)
             btn.clicked.connect(getattr(self, handler))
             self.my_queue_tray.layout().addWidget(btn)
+
+    def _update_in_progress_tray(self):
+        clear_tray(self.in_progress_tray)
+        if self.selected_id(self.in_progress_table) is None:
+            return
+        btn = QPushButton("Open Notes")
+        btn.clicked.connect(self.handle_in_progress_notes)
+        self.in_progress_tray.layout().addWidget(btn)
 
     def _update_review_tray(self):
         clear_tray(self.review_queue_tray)
@@ -146,6 +184,17 @@ class AnalystDashboard(Dashboard):
         btn.clicked.connect(self.handle_claim_from_pool)
         self.scene_pool_tray.layout().addWidget(btn)
 
+    # ── In Progress handlers ────────────────────────────────────────────
+
+    def handle_in_progress_notes(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is None:
+            return
+        row = self.in_progress_table.currentRow()
+        cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
+
     # ── My Queue handlers ───────────────────────────────────────────────
 
     def _my_queue_scene_id(self):
@@ -155,9 +204,10 @@ class AnalystDashboard(Dashboard):
         return scene_id
 
     def handle_open_roi(self):
-        if self._my_queue_scene_id() is None:
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
             return
-        super().handle_open_roi()
+        super().handle_open_roi(scene_id)
 
     def handle_submit(self):
         scene_id = self._my_queue_scene_id()

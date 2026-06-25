@@ -242,6 +242,62 @@ def get_scene_history(conn, scene_id):
     """, (scene_id,)).fetchall()
 
 
+def add_note(conn, scene_id, author_id, body):
+    conn.execute(
+        "INSERT INTO notes (scene_id, author_id, body) VALUES (?, ?, ?)",
+        (scene_id, author_id, body)
+    )
+    conn.commit()
+
+
+def get_scene_thread(conn, scene_id):
+    """Interleaved notes + review-comments for a scene, oldest first.
+    Each row: type ('note'/'review'), timestamp, author_name, content, decision."""
+    return conn.execute("""
+        SELECT 'note' AS type, n.timestamp, u.username AS author_name,
+               n.body AS content, NULL AS decision
+        FROM notes n
+        JOIN users u ON n.author_id = u.id
+        WHERE n.scene_id = ?
+        UNION ALL
+        SELECT 'review' AS type, r.timestamp, u.username AS author_name,
+               r.comments AS content, r.decision
+        FROM reviews r
+        JOIN users u ON r.reviewer_id = u.id
+        WHERE r.scene_id = ? AND r.comments IS NOT NULL
+        ORDER BY timestamp ASC
+    """, (scene_id, scene_id)).fetchall()
+
+
+def get_analyst_in_progress(conn, user_id):
+    """Scenes this analyst has contributed to that are still in the pipeline.
+    Owned scenes at status 2/3/5 (submitted and being processed), plus scenes
+    they peer-reviewed at status 4/5 (decision made, scene still moving)."""
+    return conn.execute("""
+        SELECT s.*,
+               o.username AS owner_username,
+               cb.username AS current_holder,
+               CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
+        FROM scenes s
+        LEFT JOIN users o  ON s.owner_id   = o.id
+        LEFT JOIN users cb ON s.claimed_by = cb.id
+        WHERE (s.owner_id = ? AND s.status IN (2, 3, 5))
+           OR (s.peer_reviewer_id = ? AND s.status IN (4, 5))
+        ORDER BY s.updated_at DESC
+    """, (user_id, user_id, user_id)).fetchall()
+
+
+def get_supervisor_in_progress(conn, user_id):
+    """Scenes this supervisor has kicked back that are still being revised (status 4)."""
+    return conn.execute("""
+        SELECT s.*, o.username AS owner_username
+        FROM scenes s
+        LEFT JOIN users o ON s.owner_id = o.id
+        WHERE s.supervisor_id = ? AND s.status = 4
+        ORDER BY s.updated_at DESC
+    """, (user_id,)).fetchall()
+
+
 # ── Connection and initialization ─────────────────────────────────────────────
 
 def get_db_connection():
@@ -287,6 +343,15 @@ def initialize_db():
             stage           TEXT NOT NULL,
             decision        TEXT NOT NULL,
             comments        TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id    INTEGER NOT NULL REFERENCES scenes (id),
+            author_id   INTEGER NOT NULL REFERENCES users (id),
+            timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
+            body        TEXT NOT NULL
         )
     """)
     conn.commit()

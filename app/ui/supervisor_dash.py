@@ -9,7 +9,7 @@ from app.ui.dashboard import (
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_name, TRAY_HEIGHT
 )
-from app.db import get_supervisor_queue, get_all_scenes
+from app.db import get_supervisor_queue, get_all_scenes, get_supervisor_in_progress
 from app.controller import supervisor_review_scene, supervisor_set_status, supervisor_reset_scene
 from app.models import SceneStatus, Decision
 
@@ -82,6 +82,16 @@ class SupervisorDashboard(Dashboard):
             "Pending Approval", self.approval_table, self.approval_tray
         )
 
+        # In Progress — scenes I've kicked back awaiting resubmission
+        self.super_in_progress_table = make_scene_table(
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Owner"]
+        )
+        self.super_in_progress_tray = make_button_tray()
+        self.super_in_progress_table.itemSelectionChanged.connect(self._update_super_in_progress_tray)
+        in_progress_section = make_section(
+            "In Progress", self.super_in_progress_table, self.super_in_progress_tray
+        )
+
         # Master scene list
         self.master_table = make_scene_table([h for h, _ in _MASTER_COLS])
         self.master_tray = make_button_tray()
@@ -90,9 +100,11 @@ class SupervisorDashboard(Dashboard):
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(approval_section)
+        splitter.addWidget(in_progress_section)
         splitter.addWidget(master_section)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 2)
 
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_task_list)
@@ -115,6 +127,20 @@ class SupervisorDashboard(Dashboard):
             self.approval_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
         self._fill_table(self.approval_table, get_supervisor_queue(self.conn), fill_approval)
 
+        def fill_in_progress(i, scene):
+            rover, sol, seq = parse_scene_name(scene['name'])
+            self.super_in_progress_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.super_in_progress_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.super_in_progress_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.super_in_progress_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.super_in_progress_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+            self.super_in_progress_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+        self._fill_table(
+            self.super_in_progress_table,
+            get_supervisor_in_progress(self.conn, self.user['id']),
+            fill_in_progress,
+        )
+
         def fill_master(i, scene):
             rover, sol, seq = parse_scene_name(scene['name'])
             parsed = {'rover': rover, 'sol': sol, 'seqid': seq}
@@ -129,6 +155,7 @@ class SupervisorDashboard(Dashboard):
         self._fill_table(self.master_table, get_all_scenes(self.conn), fill_master)
 
         self._update_approval_tray()
+        self._update_super_in_progress_tray()
         self._update_master_tray()
 
     # ── Button tray ─────────────────────────────────────────────────────
@@ -147,6 +174,14 @@ class SupervisorDashboard(Dashboard):
             btn.clicked.connect(getattr(self, handler))
             self.approval_tray.layout().addWidget(btn)
 
+    def _update_super_in_progress_tray(self):
+        clear_tray(self.super_in_progress_tray)
+        if self.selected_id(self.super_in_progress_table) is None:
+            return
+        btn = QPushButton("Open Notes")
+        btn.clicked.connect(self.handle_super_in_progress_notes)
+        self.super_in_progress_tray.layout().addWidget(btn)
+
     def _update_master_tray(self):
         clear_tray(self.master_tray)
         if self.selected_id(self.master_table) is None:
@@ -163,6 +198,15 @@ class SupervisorDashboard(Dashboard):
 
     # ── Handlers ────────────────────────────────────────────────────────
 
+    def handle_super_in_progress_notes(self):
+        scene_id = self.selected_id(self.super_in_progress_table)
+        if scene_id is None:
+            return
+        row = self.super_in_progress_table.currentRow()
+        cells = [self.super_in_progress_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
+
     def _approval_scene_id(self):
         scene_id = self.selected_id(self.approval_table)
         if scene_id is None:
@@ -170,9 +214,10 @@ class SupervisorDashboard(Dashboard):
         return scene_id
 
     def handle_open_roi(self):
-        if self._approval_scene_id() is None:
+        scene_id = self._approval_scene_id()
+        if scene_id is None:
             return
-        super().handle_open_roi()
+        super().handle_open_roi(scene_id)
 
     def handle_approve(self):
         scene_id = self._approval_scene_id()
@@ -214,9 +259,10 @@ class SupervisorDashboard(Dashboard):
         self._show_notes(scene_id, scene_name)
 
     def handle_master_open_roi(self):
-        if self.selected_id(self.master_table) is None:
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is None:
             return
-        super().handle_open_roi()
+        super().handle_open_roi(scene_id)
 
     def handle_master_see_notes(self):
         scene_id = self.selected_id(self.master_table)
