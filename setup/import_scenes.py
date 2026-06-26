@@ -232,6 +232,9 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
         for row in reader:
             total_rows += 1
             rover   = row.get('ROVER', '').strip().upper()
+            # CSV stores single letter ('A'/'B'); normalize to full rover name
+            if rover in ('A', 'B'):
+                rover = 'MER' + rover
             sol_str = row.get('SOL', '').strip()
             seq_id  = row.get('SEQ_ID', '').strip().upper()
             obs_ix  = _to_int(row.get('obs_ix', '0'))

@@ -8,3 +8,4 @@ notes.txt
 /build/
 /dist/
 /app/version.py
+*.csv

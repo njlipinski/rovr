@@ -301,7 +301,7 @@ def get_supervisor_in_progress(conn, user_id):
 # ── Connection and initialization ─────────────────────────────────────────────
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=1.0)
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA foreign_keys=ON;")

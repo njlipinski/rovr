@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import sys
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
@@ -256,9 +257,15 @@ class Dashboard(QMainWindow):
     def handle_open_roi(self, scene_id):
         """Launch ROI Studio and open the given scene."""
         path = get_roi_studio_path()
-        if not path or not os.path.isfile(path):
+        if not path or not os.path.exists(path):
+            if sys.platform == 'darwin':
+                file_filter = "Applications (*.app);;All Files (*)"
+            elif sys.platform == 'win32':
+                file_filter = "Executables (*.exe)"
+            else:
+                file_filter = "All Files (*)"
             path, _ = QFileDialog.getOpenFileName(
-                self, "Locate ROI Studio", "", "Executables (*.exe)"
+                self, "Locate ROI Studio", "", file_filter
             )
             if not path:
                 return
