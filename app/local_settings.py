@@ -30,3 +30,13 @@ def set_roi_studio_path(path):
     data = _load()
     data['roi_studio_path'] = path
     _save(data)
+
+
+def get_column_widths(key):
+    return _load().get('column_widths', {}).get(key)
+
+
+def set_column_widths(key, widths):
+    data = _load()
+    data.setdefault('column_widths', {})[key] = widths
+    _save(data)

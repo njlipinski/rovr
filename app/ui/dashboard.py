@@ -10,7 +10,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.models import SceneStatus
-from app.local_settings import get_roi_studio_path, set_roi_studio_path
+from app.local_settings import (
+    get_roi_studio_path, set_roi_studio_path,
+    get_column_widths, set_column_widths,
+)
 from app.db import get_scene_thread, add_note, get_scene_by_id
 from config import PANCAM_PATH
 try:
@@ -24,6 +27,8 @@ _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 # Fixed height for all button trays across all dashboards
 TRAY_HEIGHT = 40
 
+_MIN_COL_WIDTH = 30
+
 
 def parse_scene_key(scene_key):
     """Return (rover, sol, seq_id, obs) from a scene_key, or ('','',scene_key,'0') if unparseable."""
@@ -33,18 +38,102 @@ def parse_scene_key(scene_key):
     return '', '', scene_key, '0'
 
 
+class SceneTable(QTableWidget):
+    """QTableWidget whose columns fill available width proportionally and rescale on window resize."""
+
+    def __init__(self, headers):
+        super().__init__()
+        self._key = "|".join(headers)
+        self._in_resize = False
+
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(headers)
+
+        header = self.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        header.setSortIndicatorShown(True)
+
+        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setColumnHidden(0, True)
+        self.setSortingEnabled(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._percentages = get_column_widths(self._key)
+        header.sectionResized.connect(self._on_user_resize)
+
+    def _visible_cols(self):
+        return [i for i in range(self.columnCount()) if not self.isColumnHidden(i)]
+
+    def _on_user_resize(self, logical, old_size, new_size):
+        if self._in_resize:
+            return
+        vis = self._visible_cols()
+        if logical not in vis:
+            return
+        delta = new_size - old_size
+        if delta == 0:
+            return
+        idx = vis.index(logical)
+        if idx >= len(vis) - 1:
+            # No right neighbor — revert
+            self._in_resize = True
+            try:
+                self.setColumnWidth(logical, old_size)
+            finally:
+                self._in_resize = False
+            return
+        neighbor = vis[idx + 1]
+        new_neighbor = self.columnWidth(neighbor) - delta
+        if new_neighbor < _MIN_COL_WIDTH:
+            delta = self.columnWidth(neighbor) - _MIN_COL_WIDTH
+            new_neighbor = _MIN_COL_WIDTH
+        self._in_resize = True
+        try:
+            self.setColumnWidth(logical, old_size + delta)
+            self.setColumnWidth(neighbor, new_neighbor)
+        finally:
+            self._in_resize = False
+        vis_widths = [self.columnWidth(i) for i in vis]
+        total_w = sum(vis_widths)
+        if total_w > 0:
+            self._percentages = [w / total_w for w in vis_widths]
+            set_column_widths(self._key, self._percentages)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_percentages()
+
+    def _apply_percentages(self):
+        viewport = self.viewport()
+        assert viewport is not None
+        total = viewport.width()
+        if total <= 0:
+            return
+        vis = self._visible_cols()
+        n = len(vis)
+        if n == 0:
+            return
+        proportions = (
+            self._percentages
+            if (self._percentages and len(self._percentages) == n)
+            else [1.0 / n] * n
+        )
+        self._in_resize = True
+        try:
+            widths = [max(1, int(p * total)) for p in proportions]
+            widths[-1] += total - sum(widths)  # absorb rounding error in last column
+            for i, w in zip(vis, widths):
+                self.setColumnWidth(i, w)
+        finally:
+            self._in_resize = False
+
+
 def make_scene_table(headers):
-    """Return a sortable QTableWidget with the given column headers; col 0 (ID) is always hidden."""
-    table = QTableWidget()
-    table.setColumnCount(len(headers))
-    table.setHorizontalHeaderLabels(headers)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-    table.horizontalHeader().setSortIndicatorShown(True)
-    table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    table.setColumnHidden(0, True)
-    table.setSortingEnabled(True)
-    return table
+    """Return a SceneTable with proportional, user-resizable columns; col 0 (ID) is always hidden."""
+    return SceneTable(headers)
 
 
 def make_button_tray():
