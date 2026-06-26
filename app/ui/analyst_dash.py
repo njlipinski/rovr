@@ -168,9 +168,11 @@ class AnalystDashboard(Dashboard):
         clear_tray(self.in_progress_tray)
         if self.selected_id(self.in_progress_table) is None:
             return
-        btn = QPushButton("Open Notes")
-        btn.clicked.connect(self.handle_in_progress_notes)
-        self.in_progress_tray.layout().addWidget(btn)
+        for label, slot in [("Open in ROI Studio", self.handle_in_progress_open_roi),
+                             ("Open Notes",         self.handle_in_progress_notes)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            self.in_progress_tray.layout().addWidget(btn)
 
     def _update_review_tray(self):
         clear_tray(self.review_queue_tray)
@@ -189,6 +191,12 @@ class AnalystDashboard(Dashboard):
         self.scene_pool_tray.layout().addWidget(btn)
 
     # ── In Progress handlers ────────────────────────────────────────────
+
+    def handle_in_progress_open_roi(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is None:
+            return
+        super().handle_open_roi(scene_id)
 
     def handle_in_progress_notes(self):
         scene_id = self.selected_id(self.in_progress_table)

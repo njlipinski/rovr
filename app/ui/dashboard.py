@@ -454,20 +454,56 @@ class Dashboard(QMainWindow):
             set_roi_studio_path(path)
 
         args = [path]
-        scene = get_scene_by_id(self.conn, scene_id)
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Database Error", f"Could not load scene: {e}")
+            return
         if scene:
             # scene_key: "MERB/sol0003/P2350/obs0"
             rover, sol_dir, seq_id, _ = scene['scene_key'].split('/')
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
             folder_path = os.path.join(PANCAM_PATH, rover, 'iof', sol_dir)
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
-            if scene['roi_filename']:
-                args.append(scene['roi_filename'])
+            sel = self._find_sel_file(scene)
+            if sel:
+                args.append(sel)
 
         try:
             subprocess.Popen(args)
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
+
+    def _find_sel_file(self, scene):
+        """Return the path to the most recent .sel file for this scene under practice/, or None."""
+        rover  = scene['rover']
+        sol    = scene['sol']
+        seq_id = scene['seq_id']
+        pma    = scene['pma']
+        if None in (rover, sol, seq_id, pma):
+            return None
+
+        base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma:03d}"
+        sol_dir   = os.path.join(PANCAM_PATH, rover, 'practice', f'sol{sol:04d}')
+        if not os.path.isdir(sol_dir):
+            return None
+
+        candidates = []
+        for entry in os.scandir(sol_dir):
+            if not entry.is_dir():
+                continue
+            n = entry.name
+            is_base      = n == base_name
+            is_versioned = n.startswith(base_name + '_v') and n[len(base_name) + 2:].isdigit()
+            if not (is_base or is_versioned):
+                continue
+            sel_path = os.path.join(entry.path, base_name + '.sel')
+            if os.path.isfile(sel_path):
+                candidates.append(sel_path)
+
+        if not candidates:
+            return None
+        return max(candidates, key=os.path.getmtime)
 
     def _show_notes(self, scene_id, scene_name):
         NotesDialog(self.conn, scene_id, scene_name, self.user['id'], self).exec()
