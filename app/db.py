@@ -56,6 +56,10 @@ def update_user_password(conn, user_id, new_password_hash):
     conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
     conn.commit()
 
+def update_username(conn, user_id, new_username):
+    conn.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+    conn.commit()
+
 
 # ── Scene functions ───────────────────────────────────────────────────────────
 #

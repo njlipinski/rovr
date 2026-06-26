@@ -6,7 +6,7 @@ import sys
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
-    QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog,
+    QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
 )
 from PyQt6.QtCore import Qt
 from app.models import SceneStatus
@@ -14,7 +14,8 @@ from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
 )
-from app.db import get_scene_thread, add_note, get_scene_by_id
+from app.db import get_scene_thread, add_note, get_scene_by_id, update_username, update_user_password, get_user_by_username
+from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
 try:
     from app.version import __version__
@@ -265,6 +266,91 @@ class NotesDialog(QDialog):
         self._refresh()
 
 
+class ChangeUsernameDialog(QDialog):
+    """Let the logged-in user pick a new username."""
+    def __init__(self, conn, user, parent=None):
+        super().__init__(parent)
+        self._conn = conn
+        self._user = user
+        self.setWindowTitle("Change Username")
+        self.setMinimumWidth(340)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Current username:  {user['username']}"))
+        layout.addWidget(QLabel("New username:"))
+        self._field = QLineEdit()
+        layout.addWidget(self._field)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_accept(self):
+        new_name = self._field.text().strip()
+        if not new_name:
+            QMessageBox.warning(self, "Invalid", "Username cannot be empty.")
+            return
+        if new_name == self._user['username']:
+            self.reject()
+            return
+        if get_user_by_username(self._conn, new_name):
+            QMessageBox.warning(self, "Taken", f'"{new_name}" is already in use.')
+            return
+        update_username(self._conn, self._user['id'], new_name)
+        self.accept()
+
+    def new_username(self):
+        return self._field.text().strip()
+
+
+class ChangePasswordDialog(QDialog):
+    """Let the logged-in user set a new password after confirming their current one."""
+    def __init__(self, conn, user, parent=None):
+        super().__init__(parent)
+        self._conn = conn
+        self._user = user
+        self.setWindowTitle("Change Password")
+        self.setMinimumWidth(340)
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Current password:"))
+        self._current = QLineEdit()
+        self._current.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self._current)
+
+        layout.addWidget(QLabel("New password:"))
+        self._new = QLineEdit()
+        self._new.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self._new)
+
+        layout.addWidget(QLabel("Confirm new password:"))
+        self._confirm = QLineEdit()
+        self._confirm.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self._confirm)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_accept(self):
+        if not verify_password(self._current.text(), self._user['password_hash']):
+            QMessageBox.warning(self, "Incorrect", "Current password is incorrect.")
+            return
+        new_pw = self._new.text()
+        if len(new_pw) < 6:
+            QMessageBox.warning(self, "Too Short", "New password must be at least 6 characters.")
+            return
+        if new_pw != self._confirm.text():
+            QMessageBox.warning(self, "Mismatch", "New passwords do not match.")
+            return
+        update_user_password(self._conn, self._user['id'], hash_password(new_pw))
+        self.accept()
+
+
 class Dashboard(QMainWindow):
     def __init__(self, conn, user):
         super().__init__()
@@ -287,8 +373,15 @@ class Dashboard(QMainWindow):
         topbar_layout.setContentsMargins(2, 0, 2, 0)
         topbar_layout.addWidget(QLabel("ROVR"))
         topbar_layout.addStretch()
-        topbar_layout.addWidget(QLabel(self.user['username']))
+        self._username_label = QLabel(self.user['username'])
+        topbar_layout.addWidget(self._username_label)
         topbar_layout.addStretch()
+        change_username_btn = QPushButton("Change Username")
+        change_username_btn.clicked.connect(self._handle_change_username)
+        topbar_layout.addWidget(change_username_btn)
+        change_password_btn = QPushButton("Change Password")
+        change_password_btn.clicked.connect(self._handle_change_password)
+        topbar_layout.addWidget(change_password_btn)
         logout_button = QPushButton("Logout")
         logout_button.clicked.connect(self.handle_logout)
         topbar_layout.addWidget(logout_button)
@@ -378,6 +471,16 @@ class Dashboard(QMainWindow):
 
     def _show_notes(self, scene_id, scene_name):
         NotesDialog(self.conn, scene_id, scene_name, self.user['id'], self).exec()
+
+    def _handle_change_username(self):
+        dlg = ChangeUsernameDialog(self.conn, self.user, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.user = dict(self.user)
+            self.user['username'] = dlg.new_username()
+            self._username_label.setText(self.user['username'])
+
+    def _handle_change_password(self):
+        ChangePasswordDialog(self.conn, self.user, self).exec()
 
     def handle_logout(self):
         from app.ui.login import LoginUI
