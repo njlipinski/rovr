@@ -37,12 +37,12 @@ def deactivate_user(conn, user_id):
     conn.execute("""
         UPDATE scenes
         SET status = 0, owner_id = NULL, assigned_to = NULL, claimed_by = NULL,
-            updated_at = datetime('now')
+            updated_at = datetime('now', 'localtime')
         WHERE owner_id = ? AND status IN (1, 4)
     """, (user_id,))
     conn.execute("""
         UPDATE scenes
-        SET status = 2, claimed_by = NULL, updated_at = datetime('now')
+        SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
         WHERE owner_id = ? AND status = 3
     """, (user_id,))
     conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
@@ -122,7 +122,7 @@ def release_scene(conn, scene_id):
     else:
         return
     conn.execute(
-        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
         (target, scene_id)
     )
     conn.commit()
@@ -130,7 +130,7 @@ def release_scene(conn, scene_id):
 def update_scene_status(conn, scene_id, new_status):
     """update scene status and clear any claim lock"""
     conn.execute(
-        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
         (new_status, scene_id)
     )
     conn.commit()
@@ -145,7 +145,7 @@ def reset_scene(conn, scene_id):
             peer_reviewer_id = NULL,
             supervisor_id = NULL,
             claimed_by = NULL,
-            updated_at = datetime('now')
+            updated_at = datetime('now', 'localtime')
         WHERE id = ?
     """, (scene_id,))
     conn.commit()
@@ -205,7 +205,7 @@ def get_supervisor_queue(conn):
 
 def log_review(conn, scene_id, reviewer_id, stage, decision, comments):
     conn.execute(
-        "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))",
         (scene_id, reviewer_id, stage, decision, comments)
     )
     conn.commit()
@@ -248,7 +248,7 @@ def get_scene_history(conn, scene_id):
 
 def add_note(conn, scene_id, author_id, body):
     conn.execute(
-        "INSERT INTO notes (scene_id, author_id, body) VALUES (?, ?, ?)",
+        "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
         (scene_id, author_id, body)
     )
     conn.commit()
@@ -336,7 +336,7 @@ def initialize_db():
             supervisor_id           INTEGER REFERENCES users (id),
             claimed_by              INTEGER REFERENCES users (id),
             submitted_at            TEXT,
-            updated_at              TEXT DEFAULT (datetime('now')),
+            updated_at              TEXT DEFAULT (datetime('now', 'localtime')),
             -- CSV metadata (representative first-row values for the filter group)
             fn                      TEXT,
             rover                   TEXT,
@@ -377,7 +377,7 @@ def initialize_db():
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id        INTEGER NOT NULL REFERENCES scenes (id),
             reviewer_id     INTEGER NOT NULL REFERENCES users (id),
-            timestamp       TEXT NOT NULL DEFAULT (datetime('now')),
+            timestamp       TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             stage           TEXT NOT NULL,
             decision        TEXT NOT NULL,
             comments        TEXT
@@ -388,7 +388,7 @@ def initialize_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id    INTEGER NOT NULL REFERENCES scenes (id),
             author_id   INTEGER NOT NULL REFERENCES users (id),
-            timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
+            timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
             body        TEXT NOT NULL
         )
     """)
