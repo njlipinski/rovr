@@ -7,9 +7,9 @@ from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
     Dashboard, KickBackDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
-    parse_scene_name, TRAY_HEIGHT
+    parse_scene_key, TRAY_HEIGHT
 )
-from app.db import get_supervisor_queue, get_all_scenes, get_supervisor_in_progress
+from app.db import get_supervisor_queue, get_all_scenes, get_supervisor_in_progress, get_scene_by_id
 from app.controller import supervisor_review_scene, supervisor_set_status, supervisor_reset_scene
 from app.models import SceneStatus, Decision
 
@@ -46,11 +46,14 @@ class SetStatusDialog(QDialog):
         return self.notes.toPlainText().strip() or None
 
 # Master list columns: header label → field name on the query row
+# None fields are parsed from scene_key via parse_scene_key(); key is header.lower()
 _MASTER_COLS = [
     ("ID",            "id"),
-    ("Rover",         None),   # parsed from name
-    ("Sol",           None),   # parsed from name
-    ("SeqID",         None),   # parsed from name
+    ("Rover",         None),
+    ("Sol",           None),
+    ("SeqID",         None),
+    ("Obs",           None),
+    ("Name",          "name"),
     ("Status",        "status"),
     ("Owner",         "owner_username"),
     ("Assigned To",   "assigned_to_username"),
@@ -72,9 +75,9 @@ class SupervisorDashboard(Dashboard):
     # ── Build UI ────────────────────────────────────────────────────────
 
     def _build_main_content(self):
-        # Pending Approval queue (status 5)
+        # Pending Approval queue (status 5) — Status at col 4 so selected_status() still works
         self.approval_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Owner"]
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner"]
         )
         self.approval_tray = make_button_tray()
         self.approval_table.itemSelectionChanged.connect(self._update_approval_tray)
@@ -84,7 +87,7 @@ class SupervisorDashboard(Dashboard):
 
         # In Progress — scenes I've kicked back awaiting resubmission
         self.super_in_progress_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Owner"]
+            ["ID", "Rover", "Sol", "SeqID", "Obs", "Status", "Owner"]
         )
         self.super_in_progress_tray = make_button_tray()
         self.super_in_progress_table.itemSelectionChanged.connect(self._update_super_in_progress_tray)
@@ -118,23 +121,25 @@ class SupervisorDashboard(Dashboard):
 
     def refresh_task_list(self):
         def fill_approval(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.approval_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.approval_table.setItem(i, 1, QTableWidgetItem(rover))
             self.approval_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.approval_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.approval_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.approval_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
-            self.approval_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.approval_table.setItem(i, 5, QTableWidgetItem(obs))
+            self.approval_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
         self._fill_table(self.approval_table, get_supervisor_queue(self.conn), fill_approval)
 
         def fill_in_progress(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.super_in_progress_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.super_in_progress_table.setItem(i, 1, QTableWidgetItem(rover))
             self.super_in_progress_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.super_in_progress_table.setItem(i, 3, QTableWidgetItem(seq))
-            self.super_in_progress_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
-            self.super_in_progress_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.super_in_progress_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.super_in_progress_table.setItem(i, 4, QTableWidgetItem(obs))
+            self.super_in_progress_table.setItem(i, 5, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+            self.super_in_progress_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
         self._fill_table(
             self.super_in_progress_table,
             get_supervisor_in_progress(self.conn, self.user['id']),
@@ -142,11 +147,11 @@ class SupervisorDashboard(Dashboard):
         )
 
         def fill_master(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
-            parsed = {'rover': rover, 'sol': sol, 'seqid': seq}
-            for col, (_, field) in enumerate(_MASTER_COLS):
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
+            parsed = {'rover': rover, 'sol': sol, 'seqid': seq_id, 'obs': obs}
+            for col, (header, field) in enumerate(_MASTER_COLS):
                 if field is None:
-                    val = parsed.get(_MASTER_COLS[col][0].lower(), '')
+                    val = parsed.get(header.lower(), '')
                 elif field == 'status':
                     val = SceneStatus.LABELS.get(scene[field], str(scene[field]))
                 else:
@@ -277,9 +282,10 @@ class SupervisorDashboard(Dashboard):
         scene_id = self.selected_id(self.master_table)
         if scene_id is None:
             return
-        current = self.selected_status(self.master_table)
-        if current is None:
+        scene = get_scene_by_id(self.conn, scene_id)
+        if scene is None:
             return
+        current = scene['status']
         dialog = SetStatusDialog(current, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

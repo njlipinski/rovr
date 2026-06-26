@@ -17,19 +17,19 @@ try:
 except ImportError:
     __version__ = "dev"
 
-# Parses 'MERAsol0042seqID2210' → ('MERA', '0042', '2210')
-_NAME_RE = re.compile(r'^([A-Z]+)sol(\d{4})seqID(\d+)$')
+# Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
+_KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 
 # Fixed height for all button trays across all dashboards
 TRAY_HEIGHT = 40
 
 
-def parse_scene_name(name):
-    """Return (rover, sol, seqID) from a scene name, or ('', '', name) if unparseable."""
-    m = _NAME_RE.match(name)
+def parse_scene_key(scene_key):
+    """Return (rover, sol, seq_id, obs) from a scene_key, or ('','',scene_key,'0') if unparseable."""
+    m = _KEY_RE.match(scene_key)
     if m:
-        return m.group(1), m.group(2), m.group(3)
-    return '', '', name
+        return m.group(1), m.group(2), m.group(3), m.group(4)
+    return '', '', scene_key, '0'
 
 
 def make_scene_table(headers):
@@ -267,11 +267,11 @@ class Dashboard(QMainWindow):
         args = [path]
         scene = get_scene_by_id(self.conn, scene_id)
         if scene:
-            # scene_key: "MERB/sol0045/seqID2210"
-            rover, sol_dir, seq_part = scene['scene_key'].split('/')
-            seq_id = 'P' + seq_part.replace('seqID', '')
+            # scene_key: "MERB/sol0003/P2350/obs0"
+            rover, sol_dir, seq_id, _ = scene['scene_key'].split('/')
+            obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
             folder_path = os.path.join(PANCAM_PATH, rover, 'iof', sol_dir)
-            args += [folder_path, seq_id, '0', 'PCAM']  # obs_ix=0: single-pointing assumption
+            args += [folder_path, seq_id, str(obs_ix), 'PCAM']
             if scene['roi_filename']:
                 args.append(scene['roi_filename'])
 

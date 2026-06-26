@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
     Dashboard, KickBackDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
-    parse_scene_name, TRAY_HEIGHT
+    parse_scene_key, TRAY_HEIGHT
 )
 from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress
 from app.controller import (
@@ -46,9 +46,9 @@ class AnalystDashboard(Dashboard):
     # ── Build UI ────────────────────────────────────────────────────────
 
     def _build_main_content(self):
-        # My Work Queue
+        # My Work Queue — Status at col 4 so selected_status() still works
         self.my_queue_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Analyst 1"]
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1"]
         )
         self.my_queue_tray = make_button_tray()
         self.my_queue_table.itemSelectionChanged.connect(self._update_my_queue_tray)
@@ -56,20 +56,20 @@ class AnalystDashboard(Dashboard):
 
         # In Progress — scenes I've contributed to that are still moving
         self.in_progress_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "My Role", "Status", "Current Holder"]
+            ["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Status", "Current Holder"]
         )
         self.in_progress_tray = make_button_tray()
         self.in_progress_table.itemSelectionChanged.connect(self._update_in_progress_tray)
         in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
 
         # Ready for Peer Review
-        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID"])
+        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs"])
         self.review_queue_tray = make_button_tray()
         self.review_queue_table.itemSelectionChanged.connect(self._update_review_tray)
         review_section = make_section("Ready for Peer Review", self.review_queue_table, self.review_queue_tray)
 
         # Unclaimed Scenes
-        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID"])
+        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs"])
         self.scene_pool_tray = make_button_tray()
         self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
         pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
@@ -106,41 +106,45 @@ class AnalystDashboard(Dashboard):
         analyst_id = self.user['id']
 
         def fill_my_queue(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.my_queue_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.my_queue_table.setItem(i, 1, QTableWidgetItem(rover))
             self.my_queue_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.my_queue_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.my_queue_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.my_queue_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
-            self.my_queue_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.my_queue_table.setItem(i, 5, QTableWidgetItem(obs))
+            self.my_queue_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
         self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
 
         def fill_in_progress(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.in_progress_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.in_progress_table.setItem(i, 1, QTableWidgetItem(rover))
             self.in_progress_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.in_progress_table.setItem(i, 3, QTableWidgetItem(seq))
-            self.in_progress_table.setItem(i, 4, QTableWidgetItem(scene['my_role']))
-            self.in_progress_table.setItem(i, 5, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
-            self.in_progress_table.setItem(i, 6, QTableWidgetItem(scene['current_holder'] or '—'))
+            self.in_progress_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.in_progress_table.setItem(i, 4, QTableWidgetItem(obs))
+            self.in_progress_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
+            self.in_progress_table.setItem(i, 6, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
+            self.in_progress_table.setItem(i, 7, QTableWidgetItem(scene['current_holder'] or '—'))
         self._fill_table(self.in_progress_table, get_analyst_in_progress(self.conn, analyst_id), fill_in_progress)
 
         def fill_review(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.review_queue_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.review_queue_table.setItem(i, 1, QTableWidgetItem(rover))
             self.review_queue_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.review_queue_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.review_queue_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.review_queue_table.setItem(i, 4, QTableWidgetItem(obs))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
         def fill_pool(i, scene):
-            rover, sol, seq = parse_scene_name(scene['name'])
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
             self.scene_pool_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
             self.scene_pool_table.setItem(i, 1, QTableWidgetItem(rover))
             self.scene_pool_table.setItem(i, 2, QTableWidgetItem(sol))
-            self.scene_pool_table.setItem(i, 3, QTableWidgetItem(seq))
+            self.scene_pool_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.scene_pool_table.setItem(i, 4, QTableWidgetItem(obs))
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         self._update_my_queue_tray()
