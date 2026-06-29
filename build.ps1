@@ -31,9 +31,17 @@ if ($existingTag) {
 }
 
 # Deploy to R drive if accessible
-$dest = "R:\Rice\Pancam\rovr.exe"
+$dest   = "R:\Rice\Pancam\rovr.exe"
+$backup = "R:\Rice\Pancam\rovr.exe.bak"
 if (Test-Path "R:\Rice\Pancam") {
+    # Windows locks a running exe against overwrite but allows renaming.
+    # Rename the current exe out of the way first so the copy always succeeds,
+    # even if users have ROVR open. Running instances keep their file handle;
+    # the backup is cleaned up on the next deploy.
+    if (Test-Path $backup) { Remove-Item $backup -Force }
+    if (Test-Path $dest)   { Rename-Item $dest $backup -Force }
     Copy-Item dist\rovr.exe $dest -Force
+    if (Test-Path $backup) { try { Remove-Item $backup -Force -ErrorAction Stop } catch {} }
     Write-Host "Deployed to $dest"
 } else {
     Write-Host "R drive not available. Copy dist\rovr.exe to the Rice drive manually."

@@ -9,3 +9,4 @@ notes.txt
 /dist/
 /app/version.py
 *.csv
+/.vscode
