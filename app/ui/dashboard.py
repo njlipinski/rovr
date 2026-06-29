@@ -160,7 +160,21 @@ def make_section(label_text, table, tray):
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 4, 0, 4)
-    layout.addWidget(QLabel(label_text))
+
+    header_label = QLabel()
+
+    def _update_count():
+        n = table.rowCount()
+        header_label.setText(f"{label_text} — {n} item{'s' if n != 1 else ''}")
+
+    _update_count()
+
+    model = table.model()
+    assert model is not None
+    model.rowsInserted.connect(lambda *_: _update_count())
+    model.rowsRemoved.connect(lambda *_: _update_count())
+
+    layout.addWidget(header_label)
     layout.addWidget(table)
     layout.addWidget(tray)
     return widget
@@ -470,7 +484,11 @@ class Dashboard(QMainWindow):
                 args.append(sel)
 
         try:
-            subprocess.Popen(args)
+            if sys.platform == 'darwin':
+                # .app bundles are directories — must launch via `open -a` like Finder does
+                subprocess.Popen(['open', '-a', path, '--args'] + args[1:])
+            else:
+                subprocess.Popen(args)
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
