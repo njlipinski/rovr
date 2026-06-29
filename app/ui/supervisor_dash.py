@@ -56,7 +56,6 @@ _MASTER_COLS = [
     ("Name",          "name"),
     ("Status",        "status"),
     ("Owner",         "owner_username"),
-    ("Assigned To",   "assigned_to_username"),
     ("Peer Reviewer", "peer_reviewer_username"),
     ("Supervisor",    "supervisor_username"),
     ("Claimed By",    "claimed_by_username"),

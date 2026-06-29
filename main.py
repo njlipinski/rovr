@@ -1,6 +1,8 @@
 # main.py
 import sys
 import os
+import shutil
+import subprocess
 
 # When frozen, config.py lives beside the exe/app (not bundled).
 # On macOS, sys.executable is deep inside rovr.app/Contents/MacOS/ — walk up
@@ -13,6 +15,60 @@ if getattr(sys, 'frozen', False):
         sys.path.insert(0, os.path.dirname(_p))
     else:
         sys.path.insert(0, os.path.dirname(sys.executable))
+
+
+def _try_update():
+    """Check R drive for a newer build; if found, replace local exe and relaunch.
+
+    Only runs on Windows frozen builds. Silently skips on any error (R drive
+    unavailable, no version file, permissions issue, etc.) so a failed update
+    never prevents ROVR from starting.
+    """
+    if not getattr(sys, 'frozen', False) or sys.platform != 'win32':
+        return
+    try:
+        from app.version import __version__ as current_ver
+        from config import PANCAM_PATH
+
+        source_exe   = os.path.join(PANCAM_PATH, 'rovr.exe')
+        version_file = os.path.join(PANCAM_PATH, 'rovr-version.txt')
+        local_exe    = sys.executable
+
+        # Skip if we're already running from the R drive copy
+        if os.path.normcase(os.path.abspath(local_exe)) == \
+           os.path.normcase(os.path.abspath(source_exe)):
+            return
+
+        with open(version_file) as f:
+            latest_ver = f.read().strip()
+
+        def _ver(v):
+            try:
+                return tuple(int(x) for x in v.split('.'))
+            except ValueError:
+                return (0,)
+
+        if _ver(latest_ver) <= _ver(current_ver):
+            return  # already up to date
+
+        # Rename local exe out of the way (allowed on local NTFS even for a
+        # running exe), copy the new build in, then relaunch.
+        backup = local_exe + '.bak'
+        if os.path.exists(backup):
+            os.remove(backup)
+        os.rename(local_exe, backup)
+        shutil.copy2(source_exe, local_exe)
+        try:
+            os.remove(backup)
+        except OSError:
+            pass
+        subprocess.Popen([local_exe] + sys.argv[1:])
+        sys.exit(0)
+    except Exception:
+        pass  # silently continue with current version
+
+
+_try_update()
 
 try:
     from PyQt6.QtWidgets import QApplication

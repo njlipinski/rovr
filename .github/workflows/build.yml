@@ -63,4 +63,6 @@ jobs:
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/rovr-mac.zip
+          files: |
+            dist/rovr-mac.zip
+            launch_rovr.command

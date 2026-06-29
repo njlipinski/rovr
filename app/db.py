@@ -116,15 +116,22 @@ def release_scene(conn, scene_id):
     """release a claimed scene back to the appropriate pool (1 → 0, or 3 → 2)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] == 1:
-        target = 0
+        # Returning to Scene Pool — clear ownership so the next claimer starts fresh
+        conn.execute(
+            """UPDATE scenes
+               SET status = 0, owner_id = NULL, assigned_to = NULL, claimed_by = NULL,
+                   updated_at = datetime('now', 'localtime')
+               WHERE id = ?""",
+            (scene_id,)
+        )
     elif scene['status'] == 3:
-        target = 2
+        # Returning to Peer Review Pool — only clear the reviewer's claim
+        conn.execute(
+            "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (scene_id,)
+        )
     else:
         return
-    conn.execute(
-        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (target, scene_id)
-    )
     conn.commit()
 
 def update_scene_status(conn, scene_id, new_status):

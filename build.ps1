@@ -30,21 +30,19 @@ if ($existingTag) {
     Write-Host "Created git tag $tag. Push it with: git push origin $tag"
 }
 
-# Deploy to R drive if accessible
-$dest   = "R:\Rice\Pancam\rovr.exe"
-$backup = "R:\Rice\Pancam\rovr.exe.bak"
+# Deploy to R drive if accessible.
+# Users run ROVR from their local machines (not from the R drive), so the exe
+# here is never locked — a direct copy always succeeds. ROVR checks this file
+# on startup and self-updates if a newer version is present.
+$dest    = "R:\Rice\Pancam\rovr.exe"
+$verfile = "R:\Rice\Pancam\rovr-version.txt"
 if (Test-Path "R:\Rice\Pancam") {
-    # Windows locks a running exe against overwrite but allows renaming.
-    # Rename the current exe out of the way first so the copy always succeeds,
-    # even if users have ROVR open. Running instances keep their file handle;
-    # the backup is cleaned up on the next deploy.
-    if (Test-Path $backup) { Remove-Item $backup -Force }
-    if (Test-Path $dest)   { Rename-Item $dest $backup -Force }
     Copy-Item dist\rovr.exe $dest -Force
-    if (Test-Path $backup) { try { Remove-Item $backup -Force -ErrorAction Stop } catch {} }
-    Write-Host "Deployed to $dest"
+    Set-Content $verfile $version -Encoding utf8
+    Write-Host "Deployed $dest"
+    Write-Host "Version file written: $verfile"
 } else {
-    Write-Host "R drive not available. Copy dist\rovr.exe to the Rice drive manually."
+    Write-Host "R drive not available. Manually copy dist\rovr.exe to R:\Rice\Pancam\ and create rovr-version.txt containing: $version"
 }
 
 Write-Host ""
