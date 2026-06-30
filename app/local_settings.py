@@ -40,3 +40,26 @@ def set_column_widths(key, widths):
     data = _load()
     data.setdefault('column_widths', {})[key] = widths
     _save(data)
+
+
+def get_dark_mode():
+    return bool(_load().get('dark_mode', False))
+
+
+def set_dark_mode(enabled):
+    data = _load()
+    data['dark_mode'] = bool(enabled)
+    _save(data)
+
+
+def get_all_scene_viewed_times():
+    """Return {scene_id_str: 'YYYY-MM-DD HH:MM:SS'} of last-viewed timestamps."""
+    return _load().get('scene_viewed', {})
+
+
+def set_scene_viewed_at(scene_id):
+    """Record that the current user just viewed this scene's notes (clears the new-activity indicator)."""
+    from datetime import datetime
+    data = _load()
+    data.setdefault('scene_viewed', {})[str(scene_id)] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    _save(data)

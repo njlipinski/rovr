@@ -4,17 +4,25 @@ import re
 import subprocess
 import sys
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
+    QCheckBox, QStyledItemDelegate, QStyle,
 )
-from PyQt6.QtCore import Qt
-from app.models import SceneStatus
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPainter, QColor, QAction
+from app.models import SceneStatus, SceneFlag
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
+    get_dark_mode, set_dark_mode,
 )
-from app.db import get_scene_thread, add_note, get_scene_by_id, update_username, update_user_password, get_user_by_username
+from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme
+from app.db import (
+    get_scene_thread, add_note, get_scene_by_id,
+    update_username, update_user_password, get_user_by_username,
+    update_scene_flags,
+)
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
 try:
@@ -25,10 +33,6 @@ except ImportError:
 # Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 
-# Fixed height for all button trays across all dashboards
-TRAY_HEIGHT = 40
-
-_MIN_COL_WIDTH = 30
 
 
 def parse_scene_key(scene_key):
@@ -88,9 +92,9 @@ class SceneTable(QTableWidget):
             return
         neighbor = vis[idx + 1]
         new_neighbor = self.columnWidth(neighbor) - delta
-        if new_neighbor < _MIN_COL_WIDTH:
-            delta = self.columnWidth(neighbor) - _MIN_COL_WIDTH
-            new_neighbor = _MIN_COL_WIDTH
+        if new_neighbor < MIN_COL_WIDTH:
+            delta = self.columnWidth(neighbor) - MIN_COL_WIDTH
+            new_neighbor = MIN_COL_WIDTH
         self._in_resize = True
         try:
             self.setColumnWidth(logical, old_size + delta)
@@ -180,32 +184,127 @@ def make_section(label_text, table, tray):
     return widget
 
 
-class KickBackDialog(QDialog):
-    """Modal dialog to collect kick-back comments. Requires non-empty text before accepting."""
-    def __init__(self, parent=None):
+class FlagDelegate(QStyledItemDelegate):
+    """Renders colored flag squares in a table cell; stores raw flags string for sorting."""
+    _SQ  = 10
+    _GAP = 3
+    _PAD = 4
+
+    def paint(self, painter, option, index):
+        painter.save()
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+        flags_str = index.data(Qt.ItemDataRole.DisplayRole) or '{}'
+        flags_set = SceneFlag.parse(flags_str)
+        x = option.rect.x() + self._PAD
+        y = option.rect.y() + (option.rect.height() - self._SQ) // 2
+        for flag_id in sorted(SceneFlag.LABELS.keys()):
+            if flag_id in flags_set:
+                painter.fillRect(x, y, self._SQ, self._SQ, QColor(SceneFlag.COLORS[flag_id]))
+            x += self._SQ + self._GAP
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        n = len(SceneFlag.LABELS)
+        return QSize(n * (self._SQ + self._GAP) + self._PAD * 2, 20)
+
+
+def apply_flag_delegate(table):
+    """Apply FlagDelegate to the 'Flags' column of a table, if present."""
+    for col in range(table.columnCount()):
+        item = table.horizontalHeaderItem(col)
+        if item and item.text() == "Flags":
+            table.setItemDelegateForColumn(col, FlagDelegate(table))
+            return
+
+
+def make_flag_item(flags_str):
+    """Create a QTableWidgetItem for a flags cell (rendered by FlagDelegate)."""
+    val = flags_str or '{}'
+    item = QTableWidgetItem(val)
+    flags_set = SceneFlag.parse(val)
+    active = [SceneFlag.LABELS[f] for f in sorted(flags_set) if f in SceneFlag.LABELS]
+    item.setToolTip("Flags: " + ", ".join(active) if active else "No flags")
+    return item
+
+
+class FlagDialog(QDialog):
+    """Check/uncheck scene flags and optionally add a note. Always saves a note on OK."""
+    def __init__(self, conn, scene_id, scene_name, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Kick Back — Add Notes")
-        self.setMinimumWidth(420)
+        self.setWindowTitle(f"Flags — {scene_name}")
+        self.setMinimumWidth(360)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Notes for analyst (required):"))
-        self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("Describe what needs to be revised...")
-        layout.addWidget(self.text_edit)
+
+        scene = get_scene_by_id(conn, scene_id)
+        self.old_flags = SceneFlag.parse(scene['flags'] if scene else '{}')
+
+        layout.addWidget(QLabel("Flags:"))
+        self._checks: dict[int, QCheckBox] = {}
+        for flag_id, label in sorted(SceneFlag.LABELS.items()):
+            cb = QCheckBox(label)
+            cb.setChecked(flag_id in self.old_flags)
+            color = SceneFlag.COLORS[flag_id]
+            cb.setStyleSheet(
+                f"QCheckBox::indicator:checked {{ background-color: {color}; border: 1px solid {color}; }}"
+            )
+            layout.addWidget(cb)
+            self._checks[flag_id] = cb
+
+        layout.addWidget(QLabel("Note:"))
+        self._note = QTextEdit()
+        self._note.setFixedHeight(72)
+        self._note.setPlaceholderText("Optional additional context...")
+        layout.addWidget(self._note)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self._on_accept)
+        buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _on_accept(self):
-        if not self.text_edit.toPlainText().strip():
-            QMessageBox.warning(self, "Notes Required", "Please enter notes before kicking back.")
-            return
-        self.accept()
+    def get_flags(self):
+        return {fid for fid, cb in self._checks.items() if cb.isChecked()}
+
+    def get_note_text(self):
+        return self._note.toPlainText().strip()
+
+
+class KickBackDialog(QDialog):
+    """Shows scene history and optionally collects a kick-back note. Note is not required."""
+    def __init__(self, conn, scene_id, scene_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Kick Back — {scene_name}")
+        self.setMinimumSize(520, 480)
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Scene history:"))
+        self.display = QTextEdit()
+        self.display.setReadOnly(True)
+        layout.addWidget(self.display)
+
+        layout.addWidget(QLabel("Add a note (optional):"))
+        self.input = QTextEdit()
+        self.input.setFixedHeight(80)
+        self.input.setPlaceholderText("Describe what needs to be revised...")
+        layout.addWidget(self.input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        thread = get_scene_thread(conn, scene_id)
+        self.display.setPlainText(_format_thread(thread))
 
     def get_comments(self):
-        return self.text_edit.toPlainText().strip()
+        text = self.input.toPlainText().strip()
+        return text if text else None
 
 
 _DECISION_LABEL = {
@@ -216,7 +315,21 @@ _DECISION_LABEL = {
     'approve':          'Approve',
     'approved':         'Approved',
     'force_released':   'Force Released',
+    'flag_updated':     'Flag Updated',
 }
+
+
+def _format_thread(thread):
+    """Format a scene thread (rows from get_scene_thread) into a plain-text string."""
+    if not thread:
+        return "No history yet."
+    parts = []
+    for row in thread:
+        tag = 'Note' if row['type'] == 'note' else _DECISION_LABEL.get(row['decision'], row['decision'])
+        header = f"[{row['timestamp']}]  {row['author_name']}  ({tag})"
+        content = row['content']
+        parts.append(f"{header}\n{content}" if content else header)
+    return "\n\n---\n\n".join(parts)
 
 
 class NotesDialog(QDialog):
@@ -256,19 +369,7 @@ class NotesDialog(QDialog):
 
     def _refresh(self):
         thread = get_scene_thread(self.conn, self.scene_id)
-        if not thread:
-            self.display.setPlainText("No notes yet.")
-            return
-        parts = []
-        for row in thread:
-            if row['type'] == 'note':
-                tag = 'Note'
-            else:
-                tag = _DECISION_LABEL.get(row['decision'], row['decision'])
-            parts.append(
-                f"[{row['timestamp']}]  {row['author_name']}  ({tag})\n{row['content']}"
-            )
-        self.display.setPlainText("\n\n---\n\n".join(parts))
+        self.display.setPlainText(_format_thread(thread))
 
     def _on_add(self):
         body = self.input.toPlainText().strip()
@@ -372,6 +473,7 @@ class Dashboard(QMainWindow):
         self.user = user
         self.setWindowTitle(f"ROVR {__version__} — {user['username']}")
         self.setMinimumSize(800, 500)
+        apply_theme(get_dark_mode())
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -390,12 +492,11 @@ class Dashboard(QMainWindow):
         self._username_label = QLabel(self.user['username'])
         topbar_layout.addWidget(self._username_label)
         topbar_layout.addStretch()
-        change_username_btn = QPushButton("Change Username")
-        change_username_btn.clicked.connect(self._handle_change_username)
-        topbar_layout.addWidget(change_username_btn)
-        change_password_btn = QPushButton("Change Password")
-        change_password_btn.clicked.connect(self._handle_change_password)
-        topbar_layout.addWidget(change_password_btn)
+        menu_btn = QPushButton("☰")
+        menu_btn.setFixedWidth(34)
+        menu_btn.setToolTip("Menu")
+        menu_btn.clicked.connect(lambda: self._show_menu(menu_btn))
+        topbar_layout.addWidget(menu_btn)
         logout_button = QPushButton("Logout")
         logout_button.clicked.connect(self.handle_logout)
         topbar_layout.addWidget(logout_button)
@@ -525,6 +626,55 @@ class Dashboard(QMainWindow):
 
     def _show_notes(self, scene_id, scene_name):
         NotesDialog(self.conn, scene_id, scene_name, self.user['id'], self).exec()
+
+    def handle_flag_scene(self, scene_id, scene_name=""):
+        """Open FlagDialog, persist flag changes, and always save an auto-note."""
+        dialog = FlagDialog(self.conn, scene_id, scene_name, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_flags = dialog.get_flags()
+        old_flags = dialog.old_flags
+        update_scene_flags(self.conn, scene_id, SceneFlag.serialize(new_flags))
+        added   = new_flags - old_flags
+        removed = old_flags - new_flags
+        parts = []
+        if added:
+            parts.append("Added: "   + ", ".join(SceneFlag.LABELS[f] for f in sorted(added)))
+        if removed:
+            parts.append("Removed: " + ", ".join(SceneFlag.LABELS[f] for f in sorted(removed)))
+        if not parts:
+            parts.append("No changes")
+        note_body = "Flags updated — " + "; ".join(parts)
+        user_text = dialog.get_note_text()
+        if user_text:
+            note_body += f"\n{user_text}"
+        add_note(self.conn, scene_id, self.user['id'], note_body)
+        self.refresh_task_list()
+
+    def _show_menu(self, btn):
+        menu = QMenu(self)
+
+        act_user = QAction("Change Username", self)
+        act_user.triggered.connect(self._handle_change_username)
+        menu.addAction(act_user)
+
+        act_pass = QAction("Change Password", self)
+        act_pass.triggered.connect(self._handle_change_password)
+        menu.addAction(act_pass)
+
+        menu.addSeparator()
+
+        act_dark = QAction("Dark Mode", self)
+        act_dark.setCheckable(True)
+        act_dark.setChecked(get_dark_mode())
+        act_dark.toggled.connect(self._toggle_dark_mode)
+        menu.addAction(act_dark)
+
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _toggle_dark_mode(self, enabled):
+        set_dark_mode(enabled)
+        apply_theme(enabled)
 
     def _handle_change_username(self):
         dlg = ChangeUsernameDialog(self.conn, self.user, self)

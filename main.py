@@ -79,6 +79,9 @@ try:
         initialize_db()
         conn = get_db_connection()
         app = QApplication(sys.argv)
+        from app.local_settings import get_dark_mode
+        from app.ui.styles import apply_theme
+        apply_theme(get_dark_mode())
         login_ui = LoginUI(conn)
         login_ui.show()
         sys.exit(app.exec())

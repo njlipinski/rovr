@@ -1,11 +1,14 @@
 """analyst dashboard — work queue, peer review pool, and scene pool"""
 from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
     Dashboard, KickBackDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
-    parse_scene_key, TRAY_HEIGHT
+    parse_scene_key, apply_flag_delegate, make_flag_item,
 )
+from app.local_settings import get_all_scene_viewed_times, set_scene_viewed_at, get_dark_mode
+from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
 from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
@@ -19,6 +22,7 @@ _MY_QUEUE_BUTTONS = {
         ("Open in ROI Studio", "handle_open_roi"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
+        ("Flag Scene",         "handle_flag_from_my_queue"),
         ("Release",            "handle_release"),
     ],
     SceneStatus.IN_REVIEW: [
@@ -26,12 +30,14 @@ _MY_QUEUE_BUTTONS = {
         ("Approve",            "handle_approve"),
         ("Kick Back",          "handle_kick_back"),
         ("See Notes",          "handle_see_notes"),
+        ("Flag Scene",         "handle_flag_from_my_queue"),
         ("Release",            "handle_release"),
     ],
     SceneStatus.NEEDS_REVISION: [
         ("Open in ROI Studio", "handle_open_roi"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
+        ("Flag Scene",         "handle_flag_from_my_queue"),
         ("Release",            "handle_release"),
     ],
 }
@@ -48,8 +54,9 @@ class AnalystDashboard(Dashboard):
     def _build_main_content(self):
         # My Work Queue — Status at col 4 so selected_status() still works
         self.my_queue_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1"]
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1", "Flags"]
         )
+        apply_flag_delegate(self.my_queue_table)
         self.my_queue_tray = make_button_tray()
         self.my_queue_table.itemSelectionChanged.connect(self._update_my_queue_tray)
         my_section = make_section("My Work Queue", self.my_queue_table, self.my_queue_tray)
@@ -63,13 +70,15 @@ class AnalystDashboard(Dashboard):
         in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
 
         # Ready for Peer Review
-        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs"])
+        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags"])
+        apply_flag_delegate(self.review_queue_table)
         self.review_queue_tray = make_button_tray()
         self.review_queue_table.itemSelectionChanged.connect(self._update_review_tray)
         review_section = make_section("Ready for Peer Review", self.review_queue_table, self.review_queue_tray)
 
         # Unclaimed Scenes
-        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs"])
+        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags"])
+        apply_flag_delegate(self.scene_pool_table)
         self.scene_pool_tray = make_button_tray()
         self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
         pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
@@ -114,7 +123,11 @@ class AnalystDashboard(Dashboard):
             self.my_queue_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.my_queue_table.setItem(i, 5, QTableWidgetItem(obs))
             self.my_queue_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.my_queue_table.setItem(i, 7, make_flag_item(scene['flags']))
         self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
+
+        scene_viewed = get_all_scene_viewed_times()
+        _NEW = QColor(NEW_ACTIVITY_DARK if get_dark_mode() else NEW_ACTIVITY_LIGHT)
 
         def fill_in_progress(i, scene):
             rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
@@ -126,6 +139,12 @@ class AnalystDashboard(Dashboard):
             self.in_progress_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
             self.in_progress_table.setItem(i, 6, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.in_progress_table.setItem(i, 7, QTableWidgetItem(scene['current_holder'] or '—'))
+            viewed_at = scene_viewed.get(str(scene['id']), '')
+            if (scene['updated_at'] or '') > viewed_at:
+                for col in range(1, self.in_progress_table.columnCount()):
+                    item = self.in_progress_table.item(i, col)
+                    if item:
+                        item.setBackground(_NEW)
         self._fill_table(self.in_progress_table, get_analyst_in_progress(self.conn, analyst_id), fill_in_progress)
 
         def fill_review(i, scene):
@@ -135,6 +154,7 @@ class AnalystDashboard(Dashboard):
             self.review_queue_table.setItem(i, 2, QTableWidgetItem(sol))
             self.review_queue_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.review_queue_table.setItem(i, 4, QTableWidgetItem(obs))
+            self.review_queue_table.setItem(i, 5, make_flag_item(scene['flags']))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
@@ -145,6 +165,7 @@ class AnalystDashboard(Dashboard):
             self.scene_pool_table.setItem(i, 2, QTableWidgetItem(sol))
             self.scene_pool_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.scene_pool_table.setItem(i, 4, QTableWidgetItem(obs))
+            self.scene_pool_table.setItem(i, 5, make_flag_item(scene['flags']))
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         self._update_my_queue_tray()
@@ -159,36 +180,49 @@ class AnalystDashboard(Dashboard):
         status = self.selected_status(self.my_queue_table)
         if status is None:
             return
+        layout = self.my_queue_tray.layout()
+        assert layout is not None
         for label, handler in _MY_QUEUE_BUTTONS.get(status, []):
             btn = QPushButton(label)
             btn.clicked.connect(getattr(self, handler))
-            self.my_queue_tray.layout().addWidget(btn)
+            layout.addWidget(btn)
 
     def _update_in_progress_tray(self):
         clear_tray(self.in_progress_tray)
         if self.selected_id(self.in_progress_table) is None:
             return
+        layout = self.in_progress_tray.layout()
+        assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_in_progress_open_roi),
-                             ("Open Notes",         self.handle_in_progress_notes)]:
+                             ("Open Notes",         self.handle_in_progress_notes),
+                             ("Flag Scene",         self.handle_flag_from_in_progress)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
-            self.in_progress_tray.layout().addWidget(btn)
+            layout.addWidget(btn)
 
     def _update_review_tray(self):
         clear_tray(self.review_queue_tray)
         if self.selected_id(self.review_queue_table) is None:
             return
-        btn = QPushButton("Claim for Review")
-        btn.clicked.connect(self.handle_claim_for_review)
-        self.review_queue_tray.layout().addWidget(btn)
+        layout = self.review_queue_tray.layout()
+        assert layout is not None
+        for label, slot in [("Claim for Review", self.handle_claim_for_review),
+                             ("Flag Scene",       self.handle_flag_from_review)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
 
     def _update_pool_tray(self):
         clear_tray(self.scene_pool_tray)
         if self.selected_id(self.scene_pool_table) is None:
             return
-        btn = QPushButton("Claim Scene")
-        btn.clicked.connect(self.handle_claim_from_pool)
-        self.scene_pool_tray.layout().addWidget(btn)
+        layout = self.scene_pool_tray.layout()
+        assert layout is not None
+        for label, slot in [("Claim Scene", self.handle_claim_from_pool),
+                             ("Flag Scene",  self.handle_flag_from_pool)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
 
     # ── In Progress handlers ────────────────────────────────────────────
 
@@ -206,6 +240,17 @@ class AnalystDashboard(Dashboard):
         cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_notes(scene_id, scene_name)
+        set_scene_viewed_at(scene_id)
+        self.refresh_task_list()
+
+    def handle_flag_from_in_progress(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is None:
+            return
+        row = self.in_progress_table.currentRow()
+        cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self.handle_flag_scene(scene_id, scene_name)
 
     # ── My Queue handlers ───────────────────────────────────────────────
 
@@ -249,11 +294,14 @@ class AnalystDashboard(Dashboard):
         self.refresh_task_list()
 
     def handle_kick_back(self):
-        """Peer reviewer kicks back a status-3 scene → status 4 with notes."""
+        """Peer reviewer kicks back a status-3 scene → status 4 with optional notes."""
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        dialog = KickBackDialog(self)
+        row = self.my_queue_table.currentRow()
+        cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        dialog = KickBackDialog(self.conn, scene_id, scene_name, self)
         if dialog.exec() != KickBackDialog.DialogCode.Accepted:
             return
         comments = dialog.get_comments()
@@ -274,6 +322,15 @@ class AnalystDashboard(Dashboard):
         cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_notes(scene_id, scene_name)
+
+    def handle_flag_from_my_queue(self):
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        row = self.my_queue_table.currentRow()
+        cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self.handle_flag_scene(scene_id, scene_name)
 
     def handle_release(self):
         scene_id = self._my_queue_scene_id()
@@ -306,6 +363,15 @@ class AnalystDashboard(Dashboard):
             QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
         self.refresh_task_list()
 
+    def handle_flag_from_pool(self):
+        scene_id = self.selected_id(self.scene_pool_table)
+        if scene_id is None:
+            return
+        row = self.scene_pool_table.currentRow()
+        cells = [self.scene_pool_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self.handle_flag_scene(scene_id, scene_name)
+
     def handle_claim_for_review(self):
         scene_id = self.selected_id(self.review_queue_table)
         if scene_id is None:
@@ -321,3 +387,12 @@ class AnalystDashboard(Dashboard):
         else:
             QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
         self.refresh_task_list()
+
+    def handle_flag_from_review(self):
+        scene_id = self.selected_id(self.review_queue_table)
+        if scene_id is None:
+            return
+        row = self.review_queue_table.currentRow()
+        cells = [self.review_queue_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self.handle_flag_scene(scene_id, scene_name)

@@ -33,10 +33,11 @@ def deactivate_user(conn, user_id):
     """Deactivate user and return their open scenes to shared pools.
     Status 1 and 4 go to unclaimed pool (0) with ownership cleared so a new analyst
     can claim fresh. Status 3 goes back to peer review pool (2) with claim cleared
-    so a different analyst can review the existing ROI work."""
+    so a different analyst can review the existing ROI work. Status 6 goes back to
+    the supervisor pool (5) so another supervisor can claim it."""
     conn.execute("""
         UPDATE scenes
-        SET status = 0, owner_id = NULL, assigned_to = NULL, claimed_by = NULL,
+        SET status = 0, owner_id = NULL, claimed_by = NULL,
             updated_at = datetime('now', 'localtime')
         WHERE owner_id = ? AND status IN (1, 4)
     """, (user_id,))
@@ -44,6 +45,11 @@ def deactivate_user(conn, user_id):
         UPDATE scenes
         SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
         WHERE owner_id = ? AND status = 3
+    """, (user_id,))
+    conn.execute("""
+        UPDATE scenes
+        SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+        WHERE claimed_by = ? AND status = 6
     """, (user_id,))
     conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
     conn.commit()
@@ -64,20 +70,22 @@ def update_username(conn, user_id, new_username):
 # ── Scene functions ───────────────────────────────────────────────────────────
 #
 # Status integers:
-#   0 unclaimed        — Scene Pool (shared, all analysts)
-#   1 claimed          — Analyst 1's to-do
-#   2 pending review   — Peer Review Pool (shared, all analysts except owner)
-#   3 in review        — Analyst 2's to-do
-#   4 needs revision   — Analyst 1's to-do
-#   5 pending super    — Supervisor Pool (shared, all supervisors)
-#   6 approved         — done
+#   0 unclaimed             — Scene Pool (shared, all analysts)
+#   1 claimed               — Analyst 1's to-do
+#   2 pending review        — Peer Review Pool (shared, all analysts except owner)
+#   3 in review             — Analyst 2's to-do
+#   4 needs revision        — Analyst 1's to-do
+#   5 pending supervisor    — Supervisor Pool (shared, all supervisors)
+#   6 in supervisor review  — individual supervisor's to-do (claimed)
+#   7 approved              — done (terminal)
+#   8 issues                — flagged as problematic (terminal-ish)
 
 def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
     """create a scene; owner_id and roi_filename are None for pool-imported scenes
     (owner set at claim time, roi_filename set when analyst saves the .sel file)"""
     conn.execute(
-        "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, assigned_to, status) VALUES (?, ?, ?, ?, ?, 0)",
-        (name, scene_key, roi_filename, owner_id, owner_id)
+        "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, status) VALUES (?, ?, ?, ?, 0)",
+        (name, scene_key, roi_filename, owner_id)
     )
     conn.commit()
 
@@ -86,7 +94,7 @@ def get_scene_by_id(conn, scene_id):
 
 def get_open_scenes_for_user(conn, user_id):
     return conn.execute(
-        "SELECT * FROM scenes WHERE owner_id = ? AND status != 6",
+        "SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN (7, 8)",
         (user_id,)
     ).fetchall()
 
@@ -95,10 +103,9 @@ def claim_from_pool(conn, scene_id, analyst_id):
     cur = conn.execute(
         """UPDATE scenes
            SET status = 1, claimed_by = ?,
-               owner_id   = COALESCE(owner_id,   ?),
-               assigned_to = COALESCE(assigned_to, ?)
+               owner_id = COALESCE(owner_id, ?)
            WHERE id = ? AND status = 0""",
-        (analyst_id, analyst_id, analyst_id, scene_id)
+        (analyst_id, analyst_id, scene_id)
     )
     conn.commit()
     return cur.rowcount == 1
@@ -119,7 +126,7 @@ def release_scene(conn, scene_id):
         # Returning to Scene Pool — clear ownership so the next claimer starts fresh
         conn.execute(
             """UPDATE scenes
-               SET status = 0, owner_id = NULL, assigned_to = NULL, claimed_by = NULL,
+               SET status = 0, owner_id = NULL, claimed_by = NULL,
                    updated_at = datetime('now', 'localtime')
                WHERE id = ?""",
             (scene_id,)
@@ -148,17 +155,12 @@ def reset_scene(conn, scene_id):
         UPDATE scenes
         SET status = 0,
             owner_id = NULL,
-            assigned_to = NULL,
             peer_reviewer_id = NULL,
             supervisor_id = NULL,
             claimed_by = NULL,
             updated_at = datetime('now', 'localtime')
         WHERE id = ?
     """, (scene_id,))
-    conn.commit()
-
-def update_scene_assignment(conn, scene_id, new_analyst_id):
-    conn.execute("UPDATE scenes SET assigned_to = ? WHERE id = ?", (new_analyst_id, scene_id))
     conn.commit()
 
 def set_peer_reviewer(conn, scene_id, reviewer_id):
@@ -182,7 +184,7 @@ def get_analyst_queue(conn, user_id):
         """SELECT scenes.*, users.username AS owner_username
            FROM scenes
            LEFT JOIN users ON scenes.owner_id = users.id
-           WHERE (scenes.status IN (1, 4) AND scenes.assigned_to = ?)
+           WHERE (scenes.status IN (1, 4) AND scenes.owner_id = ?)
               OR (scenes.status = 3 AND scenes.claimed_by = ?)""",
         (user_id, user_id)
     ).fetchall()
@@ -198,13 +200,57 @@ def get_ready_queue(conn):
     """scenes available for peer review (status 2, shared pool)"""
     return conn.execute("SELECT * FROM scenes WHERE status = 2").fetchall()
 
+def claim_for_supervisor_review(conn, scene_id, supervisor_id):
+    """supervisor atomically claims a scene from the supervisor pool (5 → 6)"""
+    cur = conn.execute(
+        "UPDATE scenes SET status = 6, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 5",
+        (supervisor_id, scene_id)
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+def release_supervisor_review(conn, scene_id):
+    """return a supervisor-claimed scene to the supervisor pool (6 → 5)"""
+    conn.execute(
+        "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 6",
+        (scene_id,)
+    )
+    conn.commit()
+
+def update_scene_flags(conn, scene_id, flags_str):
+    """update the flags column on a scene"""
+    conn.execute(
+        "UPDATE scenes SET flags = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (flags_str, scene_id)
+    )
+    conn.commit()
+
 def get_supervisor_queue(conn):
-    """scenes awaiting supervisor approval (status 5, shared pool)"""
+    """scenes awaiting supervisor review (status 5, shared pool)"""
     return conn.execute("""
         SELECT scenes.*, users.username AS owner_username
         FROM scenes
         LEFT JOIN users ON scenes.owner_id = users.id
         WHERE scenes.status = 5
+    """).fetchall()
+
+def get_supervisor_my_queue(conn, supervisor_id):
+    """scenes this supervisor has claimed for review (status 6)"""
+    return conn.execute("""
+        SELECT scenes.*, users.username AS owner_username
+        FROM scenes
+        LEFT JOIN users ON scenes.owner_id = users.id
+        WHERE scenes.status = 6 AND scenes.claimed_by = ?
+    """, (supervisor_id,)).fetchall()
+
+def get_issues_queue(conn):
+    """all scenes in issues status (status 8)"""
+    return conn.execute("""
+        SELECT scenes.*, users.username AS owner_username
+        FROM scenes
+        LEFT JOIN users ON scenes.owner_id = users.id
+        WHERE scenes.status = 8
+        ORDER BY scenes.updated_at DESC
     """).fetchall()
 
 
@@ -224,18 +270,15 @@ def get_all_scenes(conn):
             s.id,
             s.name,
             s.scene_key,
-            s.roi_filename,
             s.status,
-            s.submitted_at,
+            s.flags,
             s.updated_at,
             o.username  AS owner_username,
-            a.username  AS assigned_to_username,
             pr.username AS peer_reviewer_username,
             sv.username AS supervisor_username,
             cb.username AS claimed_by_username
         FROM scenes s
         LEFT JOIN users o  ON s.owner_id          = o.id
-        LEFT JOIN users a  ON s.assigned_to        = a.id
         LEFT JOIN users pr ON s.peer_reviewer_id   = pr.id
         LEFT JOIN users sv ON s.supervisor_id      = sv.id
         LEFT JOIN users cb ON s.claimed_by         = cb.id
@@ -258,6 +301,10 @@ def add_note(conn, scene_id, author_id, body):
         "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
         (scene_id, author_id, body)
     )
+    conn.execute(
+        "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (scene_id,)
+    )
     conn.commit()
 
 
@@ -275,7 +322,7 @@ def get_scene_thread(conn, scene_id):
                r.comments AS content, r.decision
         FROM reviews r
         JOIN users u ON r.reviewer_id = u.id
-        WHERE r.scene_id = ? AND r.comments IS NOT NULL
+        WHERE r.scene_id = ?
         ORDER BY timestamp ASC
     """, (scene_id, scene_id)).fetchall()
 
@@ -292,8 +339,8 @@ def get_analyst_in_progress(conn, user_id):
         FROM scenes s
         LEFT JOIN users o  ON s.owner_id   = o.id
         LEFT JOIN users cb ON s.claimed_by = cb.id
-        WHERE (s.owner_id = ? AND s.status IN (2, 3, 5))
-           OR (s.peer_reviewer_id = ? AND s.status IN (4, 5))
+        WHERE (s.owner_id = ? AND s.status IN (2, 3, 5, 6))
+           OR (s.peer_reviewer_id = ? AND s.status IN (4, 5, 6))
         ORDER BY s.updated_at DESC
     """, (user_id, user_id, user_id)).fetchall()
 
@@ -338,7 +385,6 @@ def initialize_db():
             roi_filename            TEXT UNIQUE,
             status                  INTEGER NOT NULL DEFAULT 0,
             owner_id                INTEGER REFERENCES users (id),
-            assigned_to             INTEGER REFERENCES users (id),
             peer_reviewer_id        INTEGER REFERENCES users (id),
             supervisor_id           INTEGER REFERENCES users (id),
             claimed_by              INTEGER REFERENCES users (id),
@@ -400,4 +446,11 @@ def initialize_db():
         )
     """)
     conn.commit()
+
+    # ── Migrations ────────────────────────────────────────────────────────────
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(scenes)")}
+    if 'flags' not in existing_cols:
+        conn.execute("ALTER TABLE scenes ADD COLUMN flags TEXT NOT NULL DEFAULT '{}'")
+        conn.commit()
+
     conn.close()

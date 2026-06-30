@@ -3,7 +3,9 @@
 from app.db import (
     get_scene_by_id, update_scene_status, log_review,
     claim_from_pool as db_claim_from_pool,
-    claim_for_review as db_claim_for_review, release_scene,
+    claim_for_review as db_claim_for_review,
+    claim_for_supervisor_review as db_claim_for_supervisor_review,
+    release_scene, release_supervisor_review as db_release_supervisor_review,
     set_peer_reviewer, set_supervisor, get_user_by_id, reset_scene,
 )
 from app.models import SceneStatus, Decision, Stage
@@ -54,12 +56,34 @@ def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
         log_review(conn, scene_id, reviewer_id, Stage.PEER_REVIEW, Decision.NEEDS_REVISION, comments)
 
 
+def claim_for_supervisor_review(conn, scene_id, supervisor_id):
+    """supervisor claims a scene from the supervisor pool (5 → 6)"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene is None:
+        raise ValueError(f"Scene {scene_id} not found")
+    if scene['status'] != SceneStatus.PENDING_SUPERVISOR:
+        return False
+    return db_claim_for_supervisor_review(conn, scene_id, supervisor_id)
+
+
+def release_supervisor_review(conn, scene_id, supervisor_id):
+    """supervisor releases their claimed scene back to the supervisor pool (6 → 5)"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
+        raise ValueError("Scene is not in supervisor review")
+    if scene['claimed_by'] != supervisor_id:
+        raise ValueError("You can only release scenes you claimed")
+    db_release_supervisor_review(conn, scene_id)
+
+
 def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
-    """supervisor reviews a scene (5) — approve → approved (6),
+    """supervisor reviews a claimed scene (6) — approve → approved (7),
     or kick back → needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] != SceneStatus.PENDING_SUPERVISOR:
-        raise ValueError("Scene is not pending supervisor review")
+    if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
+        raise ValueError("Scene is not in supervisor review")
+    if scene['claimed_by'] != supervisor_id:
+        raise ValueError("You can only review scenes you have claimed")
     if decision not in Decision.VALID_REVIEW:
         raise ValueError(f"Invalid decision: {decision}")
     set_supervisor(conn, scene_id, supervisor_id)
@@ -94,11 +118,14 @@ def release_scene_to_pool(conn, scene_id, analyst_id):
 
 
 def force_release_scene(conn, scene_id, supervisor_id, comments=""):
-    """supervisor force-releases a stuck claim back to the pool"""
+    """supervisor force-releases a stuck claim back to the appropriate pool"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
-        raise ValueError("Only claimed scenes can be force-released")
-    release_scene(conn, scene_id)
+    if scene['status'] == SceneStatus.IN_SUPERVISOR_REVIEW:
+        db_release_supervisor_review(conn, scene_id)
+    elif scene['status'] in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
+        release_scene(conn, scene_id)
+    else:
+        raise ValueError("Scene does not have a releasable claim")
     log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.FORCE_RELEASED,
                comments or f"Claim by user {scene['claimed_by']} force-released")
 
