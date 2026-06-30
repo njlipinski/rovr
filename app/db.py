@@ -358,6 +358,23 @@ def get_supervisor_in_progress(conn, user_id):
 
 # ── Connection and initialization ─────────────────────────────────────────────
 
+def _run_migrations(conn):
+    from app.migrations import MIGRATIONS
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id         TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+    conn.commit()
+    applied = {row[0] for row in conn.execute("SELECT id FROM schema_migrations")}
+    for m in MIGRATIONS:
+        if m.id not in applied:
+            m.up(conn)
+            conn.execute("INSERT INTO schema_migrations (id) VALUES (?)", (m.id,))
+            conn.commit()
+
+
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
@@ -446,11 +463,5 @@ def initialize_db():
         )
     """)
     conn.commit()
-
-    # ── Migrations ────────────────────────────────────────────────────────────
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(scenes)")}
-    if 'flags' not in existing_cols:
-        conn.execute("ALTER TABLE scenes ADD COLUMN flags TEXT NOT NULL DEFAULT '{}'")
-        conn.commit()
-
+    _run_migrations(conn)
     conn.close()
