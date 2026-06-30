@@ -629,7 +629,6 @@ class StatsDialog(QDialog):
         tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        tbl.setSortingEnabled(True)
 
         for i, (label, total_key, today_key) in enumerate(self._ROWS):
             tbl.setItem(i, 0, QTableWidgetItem(label))
@@ -639,6 +638,8 @@ class StatsDialog(QDialog):
             today = QTableWidgetItem(str(stats[today_key]))
             today.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             tbl.setItem(i, 2, today)
+
+        tbl.setSortingEnabled(True)
 
         tbl.resizeRowsToContents()
         self.setMinimumWidth(380)
@@ -664,7 +665,6 @@ class StatsDialog(QDialog):
         tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         tbl.horizontalHeader().setStretchLastSection(False)
-        tbl.setSortingEnabled(True)
 
         R = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 
@@ -683,6 +683,8 @@ class StatsDialog(QDialog):
             tbl.setItem(i, 6, num(stats['approved_today']))
             tbl.setItem(i, 7, num(stats['kicked_back_total']))
             tbl.setItem(i, 8, num(stats['kicked_back_today']))
+
+        tbl.setSortingEnabled(True)
 
         tbl.resizeColumnsToContents()
         tbl.resizeRowsToContents()
