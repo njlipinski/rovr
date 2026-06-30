@@ -39,7 +39,7 @@ def _try_update():
            os.path.normcase(os.path.abspath(source_exe)):
             return
 
-        with open(version_file) as f:
+        with open(version_file, encoding='utf-8-sig') as f:
             latest_ver = f.read().strip()
 
         def _ver(v):

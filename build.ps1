@@ -12,7 +12,7 @@ $tag = "v$version"
 Write-Host "Building ROVR $tag..."
 
 # Generate version module (gitignored — not committed)
-Set-Content -Path app\version.py -Value "__version__ = '$version'" -Encoding utf8
+[System.IO.File]::WriteAllText("app\version.py", "__version__ = '$version'")
 
 # Build exe
 python -m PyInstaller rovr.spec
@@ -38,7 +38,7 @@ $dest    = "R:\Rice\Pancam\rovr.exe"
 $verfile = "R:\Rice\Pancam\rovr-version.txt"
 if (Test-Path "R:\Rice\Pancam") {
     Copy-Item dist\rovr.exe $dest -Force
-    Set-Content $verfile $version -Encoding utf8
+    [System.IO.File]::WriteAllText($verfile, $version)
     Write-Host "Deployed $dest"
     Write-Host "Version file written: $verfile"
 } else {
