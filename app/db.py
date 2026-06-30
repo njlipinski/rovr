@@ -360,6 +360,50 @@ def get_supervisor_in_progress(conn, user_id):
 
 # ── Connection and initialization ─────────────────────────────────────────────
 
+def get_user_stats(conn, user_id):
+    """Stat counts for one user derived from the reviews + scenes tables."""
+    def count(sql):
+        return conn.execute(sql, (user_id,)).fetchone()[0]
+    return {
+        'submitted_total': count(
+            "SELECT COUNT(DISTINCT scene_id) FROM reviews "
+            "WHERE reviewer_id=? AND decision='submitted'"),
+        'submitted_today': count(
+            "SELECT COUNT(DISTINCT scene_id) FROM reviews "
+            "WHERE reviewer_id=? AND decision='submitted' "
+            "AND DATE(timestamp)=DATE('now','localtime')"),
+        'peer_reviewed_total': count(
+            "SELECT COUNT(*) FROM reviews "
+            "WHERE reviewer_id=? AND stage='peer_review'"),
+        'peer_reviewed_today': count(
+            "SELECT COUNT(*) FROM reviews "
+            "WHERE reviewer_id=? AND stage='peer_review' "
+            "AND DATE(timestamp)=DATE('now','localtime')"),
+        'approved_total': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved'"),
+        'approved_today': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
+            "AND DATE(r.timestamp)=DATE('now','localtime')"),
+        'kicked_back_total': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.decision='needs_revision'"),
+        'kicked_back_today': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.decision='needs_revision' "
+            "AND DATE(r.timestamp)=DATE('now','localtime')"),
+    }
+
+
+def get_all_user_stats(conn):
+    """Return [(user_row, stats_dict)] for all active users, sorted by username."""
+    users = conn.execute(
+        "SELECT id, username, role FROM users WHERE active=1 ORDER BY username"
+    ).fetchall()
+    return [(u, get_user_stats(conn, u['id'])) for u in users]
+
+
 def _run_migrations(conn):
     from app.migrations import MIGRATIONS
     conn.execute("""

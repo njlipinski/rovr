@@ -5,7 +5,7 @@ import subprocess
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle,
 )
@@ -21,7 +21,7 @@ from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_the
 from app.db import (
     get_scene_thread, add_note, get_scene_by_id,
     update_username, update_user_password, get_user_by_username,
-    update_scene_flags,
+    update_scene_flags, get_user_stats, get_all_user_stats,
 )
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
@@ -466,11 +466,211 @@ class ChangePasswordDialog(QDialog):
         self.accept()
 
 
+class FilterDialog(QDialog):
+    """Filter scenes by rover, sol range, and sequence ID range across all tables."""
+
+    _DEFAULTS = {
+        'rovers':    {'MERA', 'MERB'},
+        'sol_min':   None,
+        'sol_max':   None,
+        'seqid_min': None,
+        'seqid_max': None,
+    }
+
+    def __init__(self, filters, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Filters")
+        self.setMinimumWidth(320)
+        self._result = dict(filters)
+        layout = QVBoxLayout(self)
+
+        rover_box = QGroupBox("Rover")
+        rover_lay = QHBoxLayout(rover_box)
+        self._mera = QCheckBox("MERA")
+        self._mera.setChecked('MERA' in filters['rovers'])
+        self._merb = QCheckBox("MERB")
+        self._merb.setChecked('MERB' in filters['rovers'])
+        rover_lay.addWidget(self._mera)
+        rover_lay.addWidget(self._merb)
+        rover_lay.addStretch()
+        layout.addWidget(rover_box)
+
+        sol_box = QGroupBox("Sol Range")
+        sol_lay = QHBoxLayout(sol_box)
+        sol_lay.addWidget(QLabel("From"))
+        self._sol_min = QLineEdit()
+        self._sol_min.setPlaceholderText("0")
+        self._sol_min.setFixedWidth(70)
+        if filters['sol_min'] is not None:
+            self._sol_min.setText(str(filters['sol_min']))
+        sol_lay.addWidget(self._sol_min)
+        sol_lay.addWidget(QLabel("to"))
+        self._sol_max = QLineEdit()
+        self._sol_max.setPlaceholderText("end")
+        self._sol_max.setFixedWidth(70)
+        if filters['sol_max'] is not None:
+            self._sol_max.setText(str(filters['sol_max']))
+        sol_lay.addWidget(self._sol_max)
+        sol_lay.addStretch()
+        layout.addWidget(sol_box)
+
+        seq_box = QGroupBox("Sequence ID Range")
+        seq_lay = QHBoxLayout(seq_box)
+        seq_lay.addWidget(QLabel("From"))
+        self._seqid_min = QLineEdit()
+        self._seqid_min.setPlaceholderText("0")
+        self._seqid_min.setFixedWidth(70)
+        if filters['seqid_min'] is not None:
+            self._seqid_min.setText(str(filters['seqid_min']))
+        seq_lay.addWidget(self._seqid_min)
+        seq_lay.addWidget(QLabel("to"))
+        self._seqid_max = QLineEdit()
+        self._seqid_max.setPlaceholderText("end")
+        self._seqid_max.setFixedWidth(70)
+        if filters['seqid_max'] is not None:
+            self._seqid_max.setText(str(filters['seqid_max']))
+        seq_lay.addWidget(self._seqid_max)
+        seq_lay.addStretch()
+        layout.addWidget(seq_box)
+
+        btn_row = QHBoxLayout()
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.clicked.connect(self._reset)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+        apply_btn = QPushButton("Apply")
+        apply_btn.setDefault(True)
+        apply_btn.clicked.connect(self._apply)
+        btn_row.addWidget(apply_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    @staticmethod
+    def _parse_int(text):
+        try:
+            return int(text.strip()) if text.strip() else None
+        except ValueError:
+            return None
+
+    def _reset(self):
+        self._mera.setChecked(True)
+        self._merb.setChecked(True)
+        self._sol_min.clear()
+        self._sol_max.clear()
+        self._seqid_min.clear()
+        self._seqid_max.clear()
+
+    def _apply(self):
+        rovers = set()
+        if self._mera.isChecked():
+            rovers.add('MERA')
+        if self._merb.isChecked():
+            rovers.add('MERB')
+        self._result = {
+            'rovers':    rovers,
+            'sol_min':   self._parse_int(self._sol_min.text()),
+            'sol_max':   self._parse_int(self._sol_max.text()),
+            'seqid_min': self._parse_int(self._seqid_min.text()),
+            'seqid_max': self._parse_int(self._seqid_max.text()),
+        }
+        self.accept()
+
+    def result_filters(self):
+        return self._result
+
+
+class StatsDialog(QDialog):
+    """Show productivity stats. Analysts see their own; supervisors see all users."""
+
+    _ROWS = [
+        ("Scenes submitted",       'submitted_total',    'submitted_today'),
+        ("Peer reviews completed", 'peer_reviewed_total','peer_reviewed_today'),
+        ("My scenes approved",     'approved_total',     'approved_today'),
+        ("Kicked back to me",      'kicked_back_total',  'kicked_back_today'),
+    ]
+
+    def __init__(self, conn, user, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Statistics")
+        layout = QVBoxLayout(self)
+
+        from app.models import Role
+        if user['role'] == Role.SUPERVISOR:
+            self._build_all_users(layout, conn)
+        else:
+            self._build_own(layout, conn, user['id'])
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _build_own(self, layout, conn, user_id):
+        stats = get_user_stats(conn, user_id)
+        layout.addWidget(QLabel("<b>My Statistics</b>"))
+
+        tbl = QTableWidget(len(self._ROWS), 3)
+        tbl.setHorizontalHeaderLabels(["", "Total", "Today"])
+        tbl.verticalHeader().setVisible(False)
+        tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        tbl.horizontalHeader().setStretchLastSection(False)
+        tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+
+        for i, (label, total_key, today_key) in enumerate(self._ROWS):
+            tbl.setItem(i, 0, QTableWidgetItem(label))
+            total = QTableWidgetItem(str(stats[total_key]))
+            total.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            tbl.setItem(i, 1, total)
+            today = QTableWidgetItem(str(stats[today_key]))
+            today.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            tbl.setItem(i, 2, today)
+
+        tbl.resizeRowsToContents()
+        tbl.setFixedHeight(tbl.horizontalHeader().height() +
+                           sum(tbl.rowHeight(r) for r in range(tbl.rowCount())) + 2)
+        self.setMinimumWidth(380)
+        layout.addWidget(tbl)
+
+    def _build_all_users(self, layout, conn):
+        all_stats = get_all_user_stats(conn)
+        layout.addWidget(QLabel("<b>All User Statistics</b>"))
+
+        headers = ["Username", "Role", "Submitted", "Peer Rev'd", "Approved", "Kicked Back"]
+        tbl = QTableWidget(len(all_stats), len(headers))
+        tbl.setHorizontalHeaderLabels(headers)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        tbl.horizontalHeader().setStretchLastSection(True)
+
+        def fmt(total, today):
+            return f"{total}  ({today} today)"
+
+        for i, (user, stats) in enumerate(all_stats):
+            tbl.setItem(i, 0, QTableWidgetItem(user['username']))
+            tbl.setItem(i, 1, QTableWidgetItem(user['role']))
+            tbl.setItem(i, 2, QTableWidgetItem(fmt(stats['submitted_total'],    stats['submitted_today'])))
+            tbl.setItem(i, 3, QTableWidgetItem(fmt(stats['peer_reviewed_total'],stats['peer_reviewed_today'])))
+            tbl.setItem(i, 4, QTableWidgetItem(fmt(stats['approved_total'],     stats['approved_today'])))
+            tbl.setItem(i, 5, QTableWidgetItem(fmt(stats['kicked_back_total'],  stats['kicked_back_today'])))
+
+        tbl.resizeColumnsToContents()
+        tbl.resizeRowsToContents()
+        self.setMinimumWidth(620)
+        layout.addWidget(tbl)
+
+
 class Dashboard(QMainWindow):
     def __init__(self, conn, user):
         super().__init__()
         self.conn = conn
         self.user = user
+        self._filters = dict(FilterDialog._DEFAULTS)
+        self._filters['rovers'] = set(FilterDialog._DEFAULTS['rovers'])
         self.setWindowTitle(f"ROVR {__version__} — {user['username']}")
         self.setMinimumSize(800, 500)
         apply_theme(get_dark_mode())
@@ -492,6 +692,9 @@ class Dashboard(QMainWindow):
         self._username_label = QLabel(self.user['username'])
         topbar_layout.addWidget(self._username_label)
         topbar_layout.addStretch()
+        self._filter_btn = QPushButton("Filters")
+        self._filter_btn.clicked.connect(self._open_filter_dialog)
+        topbar_layout.addWidget(self._filter_btn)
         menu_btn = QPushButton("☰")
         menu_btn.setFixedWidth(34)
         menu_btn.setToolTip("Menu")
@@ -521,14 +724,68 @@ class Dashboard(QMainWindow):
 
     # ── Shared helpers available to all subclasses ──────────────────────
 
-    @staticmethod
-    def _fill_table(table, rows, fill_fn):
+    def _fill_table(self, table, rows, fill_fn):
         """Populate a table safely: disables sorting during insert to prevent mid-fill reorders."""
         table.setSortingEnabled(False)
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             fill_fn(i, row)
+            id_item = table.item(i, 0)
+            if id_item is not None:
+                try:
+                    id_item.setData(Qt.ItemDataRole.UserRole, row['scene_key'])
+                except (IndexError, KeyError):
+                    pass
         table.setSortingEnabled(True)
+        self._apply_filters(table)
+
+    def _apply_filters(self, table):
+        f = self._filters
+        for row in range(table.rowCount()):
+            id_item = table.item(row, 0)
+            if id_item is None:
+                continue
+            scene_key = id_item.data(Qt.ItemDataRole.UserRole)
+            if not scene_key:
+                table.setRowHidden(row, False)
+                continue
+            rover, sol_str, seq_id, _ = parse_scene_key(scene_key)
+            hide = False
+            if rover and rover not in f['rovers']:
+                hide = True
+            if not hide:
+                try:
+                    sol = int(sol_str)
+                    if f['sol_min'] is not None and sol < f['sol_min']:
+                        hide = True
+                    elif f['sol_max'] is not None and sol > f['sol_max']:
+                        hide = True
+                except (ValueError, TypeError):
+                    pass
+            if not hide:
+                m = re.search(r'\d+', seq_id or '')
+                if m:
+                    seq_num = int(m.group())
+                    if f['seqid_min'] is not None and seq_num < f['seqid_min']:
+                        hide = True
+                    elif f['seqid_max'] is not None and seq_num > f['seqid_max']:
+                        hide = True
+            table.setRowHidden(row, hide)
+
+    def _open_filter_dialog(self):
+        dlg = FilterDialog(self._filters, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._filters = dlg.result_filters()
+            self._update_filter_btn()
+            self.refresh_task_list()
+
+    def _update_filter_btn(self):
+        f = self._filters
+        active = (
+            f['rovers'] != {'MERA', 'MERB'} or
+            any(f[k] is not None for k in ('sol_min', 'sol_max', 'seqid_min', 'seqid_max'))
+        )
+        self._filter_btn.setText("Filters ●" if active else "Filters")
 
     def selected_id(self, table):
         """Return scene ID from hidden col 0 of the selected row, or None."""
@@ -654,6 +911,12 @@ class Dashboard(QMainWindow):
     def _show_menu(self, btn):
         menu = QMenu(self)
 
+        act_stats = QAction("See Stats", self)
+        act_stats.triggered.connect(self._handle_see_stats)
+        menu.addAction(act_stats)
+
+        menu.addSeparator()
+
         act_user = QAction("Change Username", self)
         act_user.triggered.connect(self._handle_change_username)
         menu.addAction(act_user)
@@ -671,6 +934,9 @@ class Dashboard(QMainWindow):
         menu.addAction(act_dark)
 
         menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _handle_see_stats(self):
+        StatsDialog(self.conn, self.user, self).exec()
 
     def _toggle_dark_mode(self, enabled):
         set_dark_mode(enabled)
