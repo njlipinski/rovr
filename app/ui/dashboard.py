@@ -840,9 +840,9 @@ class Dashboard(QMainWindow):
             QMessageBox.warning(self, "Database Error", f"Could not load scene: {e}")
             return
         if scene:
-            rover, sol_dir, seq_id, _ = parse_scene_key(scene['scene_key'])
+            rover, sol, seq_id, _ = parse_scene_key(scene['scene_key'])
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
-            folder_path = os.path.join(PANCAM_PATH, rover, 'iof', sol_dir)
+            folder_path = os.path.join(PANCAM_PATH, rover, 'iof', f'sol{sol}')
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
             sel = self._find_sel_file(scene)
             if sel:
