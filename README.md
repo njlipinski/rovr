@@ -6,13 +6,6 @@ A PyQt6 desktop application for managing multi-stage validation of ROI (Region o
 
 See the [latest release](../../releases/latest) for Windows (`rovr.exe`) and Mac (`rovr-mac.zip`).
 
-## Team
-
-| Role | Count |
-|------|-------|
-| Analysts | 6 |
-| Supervisors | 2 |
-
 ## Tech Stack
 
 | Component | Technology |

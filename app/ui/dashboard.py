@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPainter, QColor, QAction
-from app.models import SceneStatus, SceneFlag
+from app.models import SceneStatus, SceneFlag, Role
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
@@ -582,6 +582,15 @@ class FilterDialog(QDialog):
         return self._result
 
 
+class _NumericItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts by integer value instead of string."""
+    def __lt__(self, other):
+        try:
+            return int(self.text()) < int(other.text())
+        except ValueError:
+            return super().__lt__(other)
+
+
 class StatsDialog(QDialog):
     """Show productivity stats. Analysts see their own; supervisors see all users."""
 
@@ -595,9 +604,9 @@ class StatsDialog(QDialog):
     def __init__(self, conn, user, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Statistics")
+        self.setSizeGripEnabled(True)
         layout = QVBoxLayout(self)
 
-        from app.models import Role
         if user['role'] == Role.SUPERVISOR:
             self._build_all_users(layout, conn)
         else:
@@ -620,6 +629,7 @@ class StatsDialog(QDialog):
         tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        tbl.setSortingEnabled(True)
 
         for i, (label, total_key, today_key) in enumerate(self._ROWS):
             tbl.setItem(i, 0, QTableWidgetItem(label))
@@ -631,37 +641,52 @@ class StatsDialog(QDialog):
             tbl.setItem(i, 2, today)
 
         tbl.resizeRowsToContents()
-        tbl.setFixedHeight(tbl.horizontalHeader().height() +
-                           sum(tbl.rowHeight(r) for r in range(tbl.rowCount())) + 2)
         self.setMinimumWidth(380)
         layout.addWidget(tbl)
 
     def _build_all_users(self, layout, conn):
-        all_stats = get_all_user_stats(conn)
+        all_stats = [
+            (u, s) for u, s in get_all_user_stats(conn)
+            if u['role'] != Role.SUPERVISOR and 'test' not in u['username'].lower()
+        ]
         layout.addWidget(QLabel("<b>All User Statistics</b>"))
 
-        headers = ["Username", "Role", "Submitted", "Peer Rev'd", "Approved", "Kicked Back"]
+        headers = [
+            "Username",
+            "Submitted", "Sub Today",
+            "Peer Rev'd", "PR Today",
+            "Approved",   "Appr Today",
+            "Kicked Back","KB Today",
+        ]
         tbl = QTableWidget(len(all_stats), len(headers))
         tbl.setHorizontalHeaderLabels(headers)
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        tbl.horizontalHeader().setStretchLastSection(True)
+        tbl.horizontalHeader().setStretchLastSection(False)
+        tbl.setSortingEnabled(True)
 
-        def fmt(total, today):
-            return f"{total}  ({today} today)"
+        R = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+
+        def num(val):
+            item = _NumericItem(str(val))
+            item.setTextAlignment(R)
+            return item
 
         for i, (user, stats) in enumerate(all_stats):
             tbl.setItem(i, 0, QTableWidgetItem(user['username']))
-            tbl.setItem(i, 1, QTableWidgetItem(user['role']))
-            tbl.setItem(i, 2, QTableWidgetItem(fmt(stats['submitted_total'],    stats['submitted_today'])))
-            tbl.setItem(i, 3, QTableWidgetItem(fmt(stats['peer_reviewed_total'],stats['peer_reviewed_today'])))
-            tbl.setItem(i, 4, QTableWidgetItem(fmt(stats['approved_total'],     stats['approved_today'])))
-            tbl.setItem(i, 5, QTableWidgetItem(fmt(stats['kicked_back_total'],  stats['kicked_back_today'])))
+            tbl.setItem(i, 1, num(stats['submitted_total']))
+            tbl.setItem(i, 2, num(stats['submitted_today']))
+            tbl.setItem(i, 3, num(stats['peer_reviewed_total']))
+            tbl.setItem(i, 4, num(stats['peer_reviewed_today']))
+            tbl.setItem(i, 5, num(stats['approved_total']))
+            tbl.setItem(i, 6, num(stats['approved_today']))
+            tbl.setItem(i, 7, num(stats['kicked_back_total']))
+            tbl.setItem(i, 8, num(stats['kicked_back_today']))
 
         tbl.resizeColumnsToContents()
         tbl.resizeRowsToContents()
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(680)
         layout.addWidget(tbl)
 
 
