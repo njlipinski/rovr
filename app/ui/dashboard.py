@@ -795,6 +795,13 @@ class Dashboard(QMainWindow):
             return None
         return int(table.item(row, 0).text())
 
+    def selected_ids(self, table) -> list[int]:
+        """Return scene IDs from col 0 of all selected rows."""
+        return [
+            int(table.item(idx.row(), 0).text())
+            for idx in table.selectionModel().selectedRows()
+        ]
+
     def selected_status(self, table):
         """Return status int from col 4 of the selected row, or None."""
         row = table.currentRow()

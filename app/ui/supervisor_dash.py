@@ -81,7 +81,7 @@ class SupervisorDashboard(Dashboard):
     def _build_main_content(self):
         # My Work Queue — scenes claimed by this supervisor (status 6)
         self.my_queue_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Obs", "Owner", "Flags"]
+            ["ID", "Rover", "Sol", "SeqID", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.my_queue_table)
         self.my_queue_tray = make_button_tray()
@@ -92,7 +92,7 @@ class SupervisorDashboard(Dashboard):
 
         # Supervisor Pool — shared, unclaimed (status 5)
         self.pool_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags"]
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.pool_table)
         self.pool_tray = make_button_tray()
@@ -103,7 +103,7 @@ class SupervisorDashboard(Dashboard):
 
         # In Progress — scenes I kicked back, still being revised (status 4)
         self.in_progress_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Obs", "Status", "Owner", "Flags"]
+            ["ID", "Rover", "Sol", "SeqID", "Obs", "Status", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.in_progress_table)
         self.in_progress_tray = make_button_tray()
@@ -121,10 +121,10 @@ class SupervisorDashboard(Dashboard):
 
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(my_queue_section)
-        left_splitter.addWidget(pool_section)
+        left_splitter.addWidget(in_progress_section)
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.addWidget(in_progress_section)
+        right_splitter.addWidget(pool_section)
 
         top_splitter = QSplitter(Qt.Orientation.Horizontal)
         top_splitter.addWidget(left_splitter)
@@ -158,6 +158,7 @@ class SupervisorDashboard(Dashboard):
             self.my_queue_table.setItem(i, 4, QTableWidgetItem(obs))
             self.my_queue_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
             self.my_queue_table.setItem(i, 6, make_flag_item(scene['flags']))
+            self.my_queue_table.setItem(i, 7, QTableWidgetItem(str(scene['updated_at'] or '—')))
         self._fill_table(
             self.my_queue_table, get_supervisor_my_queue(self.conn, sup_id), fill_my_queue
         )
@@ -172,6 +173,7 @@ class SupervisorDashboard(Dashboard):
             self.pool_table.setItem(i, 5, QTableWidgetItem(obs))
             self.pool_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.pool_table.setItem(i, 7, make_flag_item(scene['flags']))
+            self.pool_table.setItem(i, 8, QTableWidgetItem(str(scene['updated_at'] or '—')))
         self._fill_table(self.pool_table, get_supervisor_queue(self.conn), fill_pool)
 
         def fill_in_progress(i, scene):
@@ -184,6 +186,7 @@ class SupervisorDashboard(Dashboard):
             self.in_progress_table.setItem(i, 5, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.in_progress_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.in_progress_table.setItem(i, 7, make_flag_item(scene['flags']))
+            self.in_progress_table.setItem(i, 8, QTableWidgetItem(str(scene['updated_at'] or '—')))
         self._fill_table(
             self.in_progress_table,
             get_supervisor_in_progress(self.conn, sup_id),

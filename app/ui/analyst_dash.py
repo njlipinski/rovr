@@ -201,7 +201,7 @@ class AnalystDashboard(Dashboard):
 
     def _update_review_tray(self):
         clear_tray(self.review_queue_tray)
-        if self.selected_id(self.review_queue_table) is None:
+        if not self.selected_ids(self.review_queue_table):
             return
         layout = self.review_queue_tray.layout()
         assert layout is not None
@@ -213,7 +213,7 @@ class AnalystDashboard(Dashboard):
 
     def _update_pool_tray(self):
         clear_tray(self.scene_pool_tray)
-        if self.selected_id(self.scene_pool_table) is None:
+        if not self.selected_ids(self.scene_pool_table):
             return
         layout = self.scene_pool_tray.layout()
         assert layout is not None
@@ -347,20 +347,25 @@ class AnalystDashboard(Dashboard):
     # ── Pool / review queue handlers ────────────────────────────────────
 
     def handle_claim_from_pool(self):
-        scene_id = self.selected_id(self.scene_pool_table)
-        if scene_id is None:
+        scene_ids = self.selected_ids(self.scene_pool_table)
+        if not scene_ids:
             return
-        try:
-            success = claim_from_pool(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Claim Failed", str(e))
-            self.refresh_task_list()
-            return
-        if success:
-            QMessageBox.information(self, "Claimed", "Scene claimed and added to your work queue.")
-        else:
-            QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
+        claimed, skipped = 0, 0
+        for scene_id in scene_ids:
+            try:
+                if claim_from_pool(self.conn, scene_id, self.user['id']):
+                    claimed += 1
+                else:
+                    skipped += 1
+            except ValueError:
+                skipped += 1
         self.refresh_task_list()
+        if skipped == 0:
+            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
+        elif claimed == 0:
+            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
+        else:
+            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
 
     def handle_flag_from_pool(self):
         scene_id = self.selected_id(self.scene_pool_table)
@@ -372,20 +377,25 @@ class AnalystDashboard(Dashboard):
         self.handle_flag_scene(scene_id, scene_name)
 
     def handle_claim_for_review(self):
-        scene_id = self.selected_id(self.review_queue_table)
-        if scene_id is None:
+        scene_ids = self.selected_ids(self.review_queue_table)
+        if not scene_ids:
             return
-        try:
-            success = claim_scene_for_review(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Claim Failed", str(e))
-            self.refresh_task_list()
-            return
-        if success:
-            QMessageBox.information(self, "Claimed", "Scene claimed for peer review.")
-        else:
-            QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
+        claimed, skipped = 0, 0
+        for scene_id in scene_ids:
+            try:
+                if claim_scene_for_review(self.conn, scene_id, self.user['id']):
+                    claimed += 1
+                else:
+                    skipped += 1
+            except ValueError:
+                skipped += 1
         self.refresh_task_list()
+        if skipped == 0:
+            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed for peer review.")
+        elif claimed == 0:
+            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
+        else:
+            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
 
     def handle_flag_from_review(self):
         scene_id = self.selected_id(self.review_queue_table)
