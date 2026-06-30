@@ -123,6 +123,8 @@ def main():
     conn.close()
     if not args.dry_run:
         print("\nDone.")
+        print("\n⚠️  Remember to rebuild and redeploy rovr.exe (run build.ps1) before")
+        print("   users relaunch — the new DB schema requires the matching code.")
 
 
 if __name__ == "__main__":
