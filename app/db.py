@@ -185,7 +185,9 @@ def get_analyst_queue(conn, user_id):
            FROM scenes
            LEFT JOIN users ON scenes.owner_id = users.id
            WHERE (scenes.status IN (1, 4) AND scenes.owner_id = ?)
-              OR (scenes.status = 3 AND scenes.claimed_by = ?)""",
+              OR (scenes.status = 3 AND scenes.claimed_by = ?)
+           ORDER BY CASE WHEN scenes.status = 4 THEN 0 ELSE 1 END,
+                    scenes.updated_at DESC""",
         (user_id, user_id)
     ).fetchall()
 
