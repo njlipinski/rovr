@@ -31,10 +31,12 @@ def activate_user(conn, user_id):
 
 def deactivate_user(conn, user_id):
     """Deactivate user and return their open scenes to shared pools.
-    Status 1 and 4 go to unclaimed pool (0) with ownership cleared so a new analyst
-    can claim fresh. Status 3 goes back to peer review pool (2) with claim cleared
-    so a different analyst can review the existing ROI work. Status 6 goes back to
-    the supervisor pool (5) so another supervisor can claim it."""
+    Status 1/4 (owner's work) → 0: ownership cleared so a new analyst can claim fresh.
+    Status 3 where the deactivated user is the owner → 2: their scene returns to the
+    peer review pool so a different analyst can still review it.
+    Status 3 where the deactivated user is the peer reviewer (claimed_by) → 2: their
+    claim is released so another analyst can pick up the review.
+    Status 6 (supervisor's claimed scene) → 5: released back to the supervisor pool."""
     conn.execute("""
         UPDATE scenes
         SET status = 0, owner_id = NULL, claimed_by = NULL,
@@ -45,6 +47,11 @@ def deactivate_user(conn, user_id):
         UPDATE scenes
         SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
         WHERE owner_id = ? AND status = 3
+    """, (user_id,))
+    conn.execute("""
+        UPDATE scenes
+        SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+        WHERE claimed_by = ? AND status = 3
     """, (user_id,))
     conn.execute("""
         UPDATE scenes
@@ -91,12 +98,6 @@ def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
 
 def get_scene_by_id(conn, scene_id):
     return conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone()
-
-def get_open_scenes_for_user(conn, user_id):
-    return conn.execute(
-        "SELECT * FROM scenes WHERE owner_id = ? AND status NOT IN (7, 8)",
-        (user_id,)
-    ).fetchall()
 
 def claim_from_pool(conn, scene_id, analyst_id):
     """analyst 1 atomically claims an unclaimed scene (0 → 1), setting owner if not yet assigned"""
@@ -189,13 +190,6 @@ def get_analyst_queue(conn, user_id):
            ORDER BY CASE WHEN scenes.status = 4 THEN 0 ELSE 1 END,
                     scenes.updated_at DESC""",
         (user_id, user_id)
-    ).fetchall()
-
-def get_peer_review_claimed(conn, user_id):
-    """scenes analyst 2 has currently claimed for peer review (status 3)"""
-    return conn.execute(
-        "SELECT * FROM scenes WHERE status = 3 AND claimed_by = ?",
-        (user_id,)
     ).fetchall()
 
 def get_ready_queue(conn):
@@ -422,7 +416,7 @@ def _run_migrations(conn):
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    conn = sqlite3.connect(DB_PATH, timeout=1.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA foreign_keys=ON;")

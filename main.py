@@ -63,7 +63,7 @@ def _try_update():
         except OSError:
             pass
         subprocess.Popen([local_exe] + sys.argv[1:])
-        sys.exit(0)
+        os._exit(0)
     except Exception:
         pass  # silently continue with current version
 

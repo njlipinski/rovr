@@ -38,7 +38,6 @@ _MY_QUEUE_BUTTONS = {
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
         ("Flag Scene",         "handle_flag_from_my_queue"),
-        ("Release",            "handle_release"),
     ],
 }
 

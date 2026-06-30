@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle,
@@ -309,6 +309,7 @@ class KickBackDialog(QDialog):
 
 _DECISION_LABEL = {
     'request_revision': 'Kick Back',
+    'needs_revision':   'Kicked Back',
     'status_override':  'Status Override',
     'submitted':        'Submitted',
     'reset':            'Reset',
@@ -808,22 +809,29 @@ class Dashboard(QMainWindow):
                 return status
         return None
 
+    def _prompt_for_roi_studio_path(self):
+        """Ask the user to locate ROI Studio and save the path. Returns the path, or None if cancelled."""
+        if sys.platform == 'darwin':
+            file_filter = "Applications (*.app);;All Files (*)"
+        elif sys.platform == 'win32':
+            file_filter = "Executables (*.exe)"
+        else:
+            file_filter = "All Files (*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate ROI Studio", "", file_filter
+        )
+        if not path:
+            return None
+        set_roi_studio_path(path)
+        return path
+
     def handle_open_roi(self, scene_id):
         """Launch ROI Studio and open the given scene."""
         path = get_roi_studio_path()
         if not path or not os.path.exists(path):
-            if sys.platform == 'darwin':
-                file_filter = "Applications (*.app);;All Files (*)"
-            elif sys.platform == 'win32':
-                file_filter = "Executables (*.exe)"
-            else:
-                file_filter = "All Files (*)"
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Locate ROI Studio", "", file_filter
-            )
+            path = self._prompt_for_roi_studio_path()
             if not path:
                 return
-            set_roi_studio_path(path)
 
         args = [path]
         try:
@@ -832,8 +840,7 @@ class Dashboard(QMainWindow):
             QMessageBox.warning(self, "Database Error", f"Could not load scene: {e}")
             return
         if scene:
-            # scene_key: "MERB/sol0003/P2350/obs0"
-            rover, sol_dir, seq_id, _ = scene['scene_key'].split('/')
+            rover, sol_dir, seq_id, _ = parse_scene_key(scene['scene_key'])
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
             folder_path = os.path.join(PANCAM_PATH, rover, 'iof', sol_dir)
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
@@ -859,7 +866,7 @@ class Dashboard(QMainWindow):
         if None in (rover, sol, seq_id, pma):
             return None
 
-        base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma:03d}"
+        base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma}"
         sol_dir   = os.path.join(PANCAM_PATH, rover, 'practice', f'sol{sol:04d}')
         if not os.path.isdir(sol_dir):
             return None
@@ -927,6 +934,12 @@ class Dashboard(QMainWindow):
 
         menu.addSeparator()
 
+        act_roi_path = QAction("Reset ROI Studio Path", self)
+        act_roi_path.triggered.connect(self._prompt_for_roi_studio_path)
+        menu.addAction(act_roi_path)
+
+        menu.addSeparator()
+
         act_dark = QAction("Dark Mode", self)
         act_dark.setCheckable(True)
         act_dark.setChecked(get_dark_mode())
@@ -951,6 +964,9 @@ class Dashboard(QMainWindow):
 
     def _handle_change_password(self):
         ChangePasswordDialog(self.conn, self.user, self).exec()
+
+    def refresh_task_list(self):
+        raise NotImplementedError
 
     def handle_logout(self):
         from app.ui.login import LoginUI
