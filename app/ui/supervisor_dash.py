@@ -1,43 +1,84 @@
 """supervisor dashboard — pool, personal queue, in-progress, and master list"""
 from PyQt6.QtWidgets import (
     QPushButton, QSplitter, QMessageBox, QTableWidgetItem,
-    QDialog, QVBoxLayout, QLabel, QComboBox, QTextEdit, QDialogButtonBox,
+    QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, KickBackDialog,
+    Dashboard, KickBackDialog, WordSelectTextEdit,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
 from app.db import (
     get_supervisor_queue, get_supervisor_my_queue, get_supervisor_in_progress,
-    get_all_scenes, get_scene_by_id,
+    get_all_scenes, get_scene_by_id, get_all_users, get_user_by_id,
 )
 from app.controller import (
     claim_for_supervisor_review, release_supervisor_review,
-    supervisor_review_scene, supervisor_set_status, supervisor_reset_scene,
+    supervisor_review_scene, supervisor_edit_scene, supervisor_reset_scene,
+    mark_scene_issues,
 )
-from app.models import SceneStatus, Decision
+from app.models import SceneStatus, Decision, Role
 
 
-class SetStatusDialog(QDialog):
-    """Dialog for supervisor to select a new status for a scene."""
-    def __init__(self, current_status, parent=None):
+def _make_user_combo(conn, roles, current_id):
+    """QComboBox listing active users with the given role(s), plus a "— None —"
+    entry. If current_id refers to a user outside that set (e.g. deactivated),
+    it's still appended so the combo can show and preserve that assignment."""
+    combo = QComboBox()
+    combo.addItem("— None —", None)
+    listed_ids = set()
+    for u in get_all_users(conn):
+        if u['role'] in roles and u['active']:
+            combo.addItem(u['username'], u['id'])
+            listed_ids.add(u['id'])
+    if current_id is not None and current_id not in listed_ids:
+        current_user = get_user_by_id(conn, current_id)
+        label = f"{current_user['username']} (inactive)" if current_user else f"user #{current_id} (deleted)"
+        combo.addItem(label, current_id)
+    idx = combo.findData(current_id)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    return combo
+
+
+class EditSceneDialog(QDialog):
+    """Supervisor admin dialog: edit a scene's status and directly reassign
+    its owner, peer reviewer, supervisor, and claimed-by fields."""
+    def __init__(self, conn, scene, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Set Scene Status")
+        self.setWindowTitle("Edit Scene")
         self.setMinimumWidth(360)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Current status: {SceneStatus.LABELS[current_status]}"))
-        layout.addWidget(QLabel("New status:"))
-        self.combo = QComboBox()
+
+        layout.addWidget(QLabel("Status:"))
+        self.status_combo = QComboBox()
         for status, label in SceneStatus.LABELS.items():
-            if status != current_status:
-                self.combo.addItem(label, status)
-        layout.addWidget(self.combo)
+            self.status_combo.addItem(label, status)
+        idx = self.status_combo.findData(scene['status'])
+        self.status_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        layout.addWidget(self.status_combo)
+
+        layout.addWidget(QLabel("Owner:"))
+        self.owner_combo = _make_user_combo(conn, {Role.ANALYST}, scene['owner_id'])
+        layout.addWidget(self.owner_combo)
+
+        layout.addWidget(QLabel("Peer Reviewer:"))
+        self.peer_combo = _make_user_combo(conn, {Role.ANALYST}, scene['peer_reviewer_id'])
+        layout.addWidget(self.peer_combo)
+
+        layout.addWidget(QLabel("Supervisor:"))
+        self.supervisor_combo = _make_user_combo(conn, {Role.SUPERVISOR}, scene['supervisor_id'])
+        layout.addWidget(self.supervisor_combo)
+
+        layout.addWidget(QLabel("Claimed By:"))
+        self.claimed_combo = _make_user_combo(conn, {Role.ANALYST, Role.SUPERVISOR}, scene['claimed_by'])
+        layout.addWidget(self.claimed_combo)
+
         layout.addWidget(QLabel("Notes (optional):"))
-        self.notes = QTextEdit()
+        self.notes = WordSelectTextEdit()
         self.notes.setFixedHeight(72)
         layout.addWidget(self.notes)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -46,7 +87,19 @@ class SetStatusDialog(QDialog):
         layout.addWidget(buttons)
 
     def get_status(self):
-        return self.combo.currentData()
+        return self.status_combo.currentData()
+
+    def get_owner_id(self):
+        return self.owner_combo.currentData()
+
+    def get_peer_reviewer_id(self):
+        return self.peer_combo.currentData()
+
+    def get_supervisor_id(self):
+        return self.supervisor_combo.currentData()
+
+    def get_claimed_by(self):
+        return self.claimed_combo.currentData()
 
     def get_notes(self):
         return self.notes.toPlainText().strip() or None
@@ -226,6 +279,7 @@ class SupervisorDashboard(Dashboard):
         for label, handler in [
             ("Approve",            "handle_approve"),
             ("Kick Back",          "handle_kick_back"),
+            ("Mark Bad Scene",     "handle_mark_bad_scene"),
             ("Release",            "handle_release"),
             ("Open in ROI Studio", "handle_my_queue_open_roi"),
             ("See Notes",          "handle_my_queue_see_notes"),
@@ -276,7 +330,7 @@ class SupervisorDashboard(Dashboard):
             ("Open in ROI Studio", "handle_master_open_roi"),
             ("See Notes",          "handle_master_see_notes"),
             ("Flag Scene",         "handle_master_flag"),
-            ("Set Status",         "handle_set_status"),
+            ("Edit Scene",         "handle_edit_scene"),
             ("Reset Scene",        "handle_reset_scene"),
         ]:
             btn = QPushButton(label)
@@ -329,6 +383,27 @@ class SupervisorDashboard(Dashboard):
             self.refresh_task_list()
             return
         QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
+        self.refresh_task_list()
+
+    def handle_mark_bad_scene(self):
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        scene_name = self._scene_name_from(self.my_queue_table)
+        confirm = QMessageBox.question(
+            self, "Mark Bad Scene",
+            f"Mark '{scene_name}' as having issues?\n\nThis takes it out of the normal review workflow.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            mark_scene_issues(self.conn, scene_id, self.user['id'])
+        except ValueError as e:
+            QMessageBox.warning(self, "Mark Bad Scene Failed", str(e))
+            self.refresh_task_list()
+            return
+        QMessageBox.information(self, "Marked", "Scene marked as having issues.")
         self.refresh_task_list()
 
     def handle_release(self):
@@ -426,22 +501,27 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             self.handle_flag_scene(scene_id, self._scene_name_from(self.master_table))
 
-    def handle_set_status(self):
+    def handle_edit_scene(self):
         scene_id = self.selected_id(self.master_table)
         if scene_id is None:
             return
         scene = get_scene_by_id(self.conn, scene_id)
         if scene is None:
             return
-        dialog = SetStatusDialog(scene['status'], self)
+        dialog = EditSceneDialog(self.conn, scene, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            supervisor_set_status(
-                self.conn, scene_id, self.user['id'], dialog.get_status(), dialog.get_notes()
+            supervisor_edit_scene(
+                self.conn, scene_id, self.user['id'], dialog.get_status(),
+                owner_id=dialog.get_owner_id(),
+                peer_reviewer_id=dialog.get_peer_reviewer_id(),
+                scene_supervisor_id=dialog.get_supervisor_id(),
+                claimed_by=dialog.get_claimed_by(),
+                comments=dialog.get_notes(),
             )
         except ValueError as e:
-            QMessageBox.warning(self, "Set Status Failed", str(e))
+            QMessageBox.warning(self, "Edit Scene Failed", str(e))
         self.refresh_task_list()
 
     def handle_reset_scene(self):

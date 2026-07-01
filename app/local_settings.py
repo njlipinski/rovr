@@ -52,6 +52,16 @@ def set_dark_mode(enabled):
     _save(data)
 
 
+def get_ui_scale():
+    return float(_load().get('ui_scale', 1.0))
+
+
+def set_ui_scale(scale):
+    data = _load()
+    data['ui_scale'] = float(scale)
+    _save(data)
+
+
 def get_all_scene_viewed_times():
     """Return {scene_id_str: 'YYYY-MM-DD HH:MM:SS'} of last-viewed timestamps."""
     return _load().get('scene_viewed', {})

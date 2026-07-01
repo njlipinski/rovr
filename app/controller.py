@@ -7,8 +7,9 @@ from app.db import (
     claim_for_supervisor_review as db_claim_for_supervisor_review,
     release_scene, release_supervisor_review as db_release_supervisor_review,
     set_peer_reviewer, set_supervisor, get_user_by_id, reset_scene,
+    update_scene_assignments,
 )
-from app.models import SceneStatus, Decision, Stage
+from app.models import SceneStatus, Decision, Stage, SceneFlag
 
 
 def claim_from_pool(conn, scene_id, analyst_id):
@@ -54,6 +55,23 @@ def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
     else:
         update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
         log_review(conn, scene_id, reviewer_id, Stage.PEER_REVIEW, Decision.NEEDS_REVISION, comments)
+
+
+def mark_scene_issues(conn, scene_id, supervisor_id):
+    """supervisor marks a claimed scene (6) as having issues (8) — a shortcut for
+    the common case of a flagged scene reaching supervisor review, instead of
+    needing to find it in the master list and use Edit Scene"""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
+        raise ValueError("Scene is not in supervisor review")
+    if scene['claimed_by'] != supervisor_id:
+        raise ValueError("You can only mark scenes you have claimed")
+    set_supervisor(conn, scene_id, supervisor_id)
+    update_scene_status(conn, scene_id, SceneStatus.ISSUES)
+    flag_ids = SceneFlag.parse(scene['flags'])
+    flags_note = ', '.join(SceneFlag.LABELS[f] for f in sorted(flag_ids)) if flag_ids else 'no flags recorded'
+    log_review(conn, scene_id, supervisor_id, Stage.SUPERVISOR_REVIEW, Decision.MARKED_ISSUES,
+               f"Marked as issues (flags: {flags_note})")
 
 
 def claim_for_supervisor_review(conn, scene_id, supervisor_id):
@@ -130,13 +148,44 @@ def force_release_scene(conn, scene_id, supervisor_id, comments=""):
                comments or f"Claim by user {scene['claimed_by']} force-released")
 
 
-def supervisor_set_status(conn, scene_id, supervisor_id, new_status, comments=None):
-    """supervisor overrides a scene's status; clears the claim lock and logs the change"""
+def _describe_scene_edit(conn, old_scene, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by):
+    """Build a human-readable summary of what an Edit Scene action changed, for the audit log."""
+    def name(user_id):
+        if user_id is None:
+            return "(none)"
+        user = get_user_by_id(conn, user_id)
+        return user['username'] if user else f"user #{user_id}"
+
+    parts = []
+    if new_status != old_scene['status']:
+        parts.append(f"Status: {SceneStatus.LABELS[old_scene['status']]} -> {SceneStatus.LABELS[new_status]}")
+    for label, old_val, new_val in (
+        ("Owner", old_scene['owner_id'], owner_id),
+        ("Peer Reviewer", old_scene['peer_reviewer_id'], peer_reviewer_id),
+        ("Supervisor", old_scene['supervisor_id'], scene_supervisor_id),
+        ("Claimed By", old_scene['claimed_by'], claimed_by),
+    ):
+        if old_val != new_val:
+            parts.append(f"{label}: {name(old_val)} -> {name(new_val)}")
+    return "; ".join(parts) if parts else "No changes"
+
+
+def supervisor_edit_scene(conn, scene_id, supervisor_id, new_status,
+                           owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by,
+                           comments=None):
+    """supervisor admin edit: set a scene's status and directly reassign owner,
+    peer reviewer, supervisor, and claimed_by in one action. Pass through the
+    scene's current values for any field that isn't being changed."""
     if new_status not in SceneStatus.LABELS:
         raise ValueError(f"Invalid status: {new_status}")
-    update_scene_status(conn, scene_id, new_status)
-    note = comments or f"Status manually set to {SceneStatus.LABELS[new_status]}"
-    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.STATUS_OVERRIDE, note)
+    old_scene = get_scene_by_id(conn, scene_id)
+    if old_scene is None:
+        raise ValueError(f"Scene {scene_id} not found")
+    note = comments or _describe_scene_edit(
+        conn, old_scene, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by
+    )
+    update_scene_assignments(conn, scene_id, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by)
+    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.SCENE_EDITED, note)
 
 
 def supervisor_reset_scene(conn, scene_id, supervisor_id, comments=None):

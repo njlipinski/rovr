@@ -164,6 +164,19 @@ def reset_scene(conn, scene_id):
     """, (scene_id,))
     conn.commit()
 
+def update_scene_assignments(conn, scene_id, new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by):
+    """supervisor admin edit: set status and directly reassign owner, peer reviewer,
+    supervisor, and claimed_by in one write. Unlike the normal workflow transitions,
+    this intentionally bypasses the set-once rule for the three assignment fields —
+    it exists for correcting mis-assigned scenes."""
+    conn.execute("""
+        UPDATE scenes
+        SET status = ?, owner_id = ?, peer_reviewer_id = ?, supervisor_id = ?, claimed_by = ?,
+            updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+    """, (new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by, scene_id))
+    conn.commit()
+
 def set_peer_reviewer(conn, scene_id, reviewer_id):
     conn.execute("UPDATE scenes SET peer_reviewer_id = ? WHERE id = ?", (reviewer_id, scene_id))
     conn.commit()

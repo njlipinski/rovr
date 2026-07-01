@@ -72,13 +72,25 @@ _try_update()
 
 try:
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QIcon
     from app.db import get_db_connection, initialize_db
     from app.ui.login import LoginUI
+    from app.resources import ICON_PATH
 
     def main():
         initialize_db()
         conn = get_db_connection()
+
+        # Must be set before QApplication is constructed — Qt reads this env
+        # var once, at platform-integration startup, to uniformly scale all
+        # widget geometry and fonts (buttons, tables, dialogs included).
+        from app.local_settings import get_ui_scale
+        ui_scale = get_ui_scale()
+        if ui_scale != 1.0:
+            os.environ['QT_SCALE_FACTOR'] = str(ui_scale)
+
         app = QApplication(sys.argv)
+        app.setWindowIcon(QIcon(ICON_PATH))
         from app.local_settings import get_dark_mode
         from app.ui.styles import apply_theme
         apply_theme(get_dark_mode())

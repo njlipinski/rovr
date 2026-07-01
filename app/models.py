@@ -62,6 +62,8 @@ class Decision:
     STATUS_OVERRIDE  = 'status_override'
     RESET            = 'reset'
     FLAG_UPDATED     = 'flag_updated'
+    SCENE_EDITED     = 'scene_edited'
+    MARKED_ISSUES    = 'marked_issues'
 
     VALID_REVIEW = (APPROVE, REQUEST_REVISION)
 
