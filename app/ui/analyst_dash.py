@@ -1,5 +1,5 @@
 """analyst dashboard — work queue, peer review pool, and scene pool"""
-from PyQt6.QtWidgets import QPushButton, QSplitter, QMessageBox, QTableWidgetItem
+from PyQt6.QtWidgets import QPushButton, QSplitter, QTabWidget, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
@@ -9,7 +9,7 @@ from app.ui.dashboard import (
 )
 from app.local_settings import get_all_scene_viewed_times, set_scene_viewed_at, get_dark_mode
 from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
-from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress
+from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress, get_analyst_completed
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
     release_scene_to_pool, peer_review_scene
@@ -82,6 +82,16 @@ class AnalystDashboard(Dashboard):
         self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
         pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
 
+        # My Completed Scenes
+        self.completed_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "My Role"])
+        self.completed_tray = make_button_tray()
+        self.completed_table.itemSelectionChanged.connect(self._update_completed_tray)
+        completed_section = make_section("My Completed Scenes", self.completed_table, self.completed_tray)
+
+        pool_tabs = QTabWidget()
+        pool_tabs.addTab(pool_section, "Unclaimed Scenes")
+        pool_tabs.addTab(completed_section, "My Completed Scenes")
+
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(my_section)
         left_splitter.addWidget(in_progress_section)
@@ -90,7 +100,7 @@ class AnalystDashboard(Dashboard):
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.addWidget(review_section)
-        right_splitter.addWidget(pool_section)
+        right_splitter.addWidget(pool_tabs)
         right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 1)
 
@@ -167,10 +177,21 @@ class AnalystDashboard(Dashboard):
             self.scene_pool_table.setItem(i, 5, make_flag_item(scene['flags']))
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
+        def fill_completed(i, scene):
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
+            self.completed_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.completed_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.completed_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.completed_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.completed_table.setItem(i, 4, QTableWidgetItem(obs))
+            self.completed_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
+        self._fill_table(self.completed_table, get_analyst_completed(self.conn, analyst_id), fill_completed)
+
         self._update_my_queue_tray()
         self._update_in_progress_tray()
         self._update_review_tray()
         self._update_pool_tray()
+        self._update_completed_tray()
 
     # ── Button tray updaters ────────────────────────────────────────────
 
@@ -223,6 +244,18 @@ class AnalystDashboard(Dashboard):
             btn.clicked.connect(slot)
             layout.addWidget(btn)
 
+    def _update_completed_tray(self):
+        clear_tray(self.completed_tray)
+        if self.selected_id(self.completed_table) is None:
+            return
+        layout = self.completed_tray.layout()
+        assert layout is not None
+        for label, slot in [("Open in ROI Studio", self.handle_completed_open_roi),
+                             ("See Notes",          self.handle_completed_notes)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
+
     # ── In Progress handlers ────────────────────────────────────────────
 
     def handle_in_progress_open_roi(self):
@@ -250,6 +283,23 @@ class AnalystDashboard(Dashboard):
         cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self.handle_flag_scene(scene_id, scene_name)
+
+    # ── Completed scenes handlers ───────────────────────────────────────
+
+    def handle_completed_open_roi(self):
+        scene_id = self.selected_id(self.completed_table)
+        if scene_id is None:
+            return
+        super().handle_open_roi(scene_id)
+
+    def handle_completed_notes(self):
+        scene_id = self.selected_id(self.completed_table)
+        if scene_id is None:
+            return
+        row = self.completed_table.currentRow()
+        cells = [self.completed_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_notes(scene_id, scene_name)
 
     # ── My Queue handlers ───────────────────────────────────────────────
 

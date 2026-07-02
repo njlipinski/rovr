@@ -364,6 +364,20 @@ def get_analyst_in_progress(conn, user_id):
     """, (user_id, user_id, user_id)).fetchall()
 
 
+def get_analyst_completed(conn, user_id):
+    """Scenes the analyst was involved in that have reached APPROVED (status 7)."""
+    return conn.execute("""
+        SELECT s.*,
+               o.username AS owner_username,
+               CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
+        FROM scenes s
+        LEFT JOIN users o ON s.owner_id = o.id
+        WHERE s.status = 7
+          AND (s.owner_id = ? OR s.peer_reviewer_id = ?)
+        ORDER BY s.updated_at DESC
+    """, (user_id, user_id, user_id)).fetchall()
+
+
 def get_supervisor_in_progress(conn, user_id):
     """Scenes this supervisor has kicked back that are still being revised (status 4)."""
     return conn.execute("""
