@@ -7,7 +7,7 @@ from app.db import (
     claim_for_supervisor_review as db_claim_for_supervisor_review,
     release_scene, release_supervisor_review as db_release_supervisor_review,
     set_peer_reviewer, set_supervisor, get_user_by_id, reset_scene,
-    update_scene_assignments,
+    update_scene_assignments, submit_scene_transition,
 )
 from app.models import SceneStatus, Decision, Stage, SceneFlag
 
@@ -23,19 +23,27 @@ def claim_from_pool(conn, scene_id, analyst_id):
 
 
 def submit_scene(conn, scene_id, analyst_id):
-    """analyst 1 submits a scene — claimed (1) goes to peer review (2),
-    needs revision (4) goes directly to supervisor (5), bypassing peer review"""
+    """analyst 1 submits a scene. Claimed (1) goes to peer review (2, pool).
+    Needs revision (4) bypasses peer review: if a supervisor is already
+    associated with the scene (set by a prior supervisor kick-back), it goes
+    straight into that supervisor's queue (6); otherwise it's a peer-review
+    kick-back with no supervisor attached yet, so it goes to the general
+    supervisor pool (5)."""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.NEEDS_REVISION):
         raise ValueError("Only claimed or needs-revision scenes can be submitted")
     if scene['owner_id'] != analyst_id:
         raise ValueError("Only the scene owner can submit")
+
     if scene['status'] == SceneStatus.CLAIMED:
-        update_scene_status(conn, scene_id, SceneStatus.PENDING_REVIEW)
-        log_review(conn, scene_id, analyst_id, Stage.SUBMISSION, Decision.SUBMITTED, None)
+        new_status, claimed_by, stage = SceneStatus.PENDING_REVIEW, None, Stage.SUBMISSION
+    elif scene['supervisor_id'] is not None:
+        new_status, claimed_by, stage = SceneStatus.IN_SUPERVISOR_REVIEW, scene['supervisor_id'], Stage.RESUBMISSION
     else:
-        update_scene_status(conn, scene_id, SceneStatus.PENDING_SUPERVISOR)
-        log_review(conn, scene_id, analyst_id, Stage.RESUBMISSION, Decision.SUBMITTED, None)
+        new_status, claimed_by, stage = SceneStatus.PENDING_SUPERVISOR, None, Stage.RESUBMISSION
+
+    submit_scene_transition(conn, scene_id, new_status, claimed_by)
+    log_review(conn, scene_id, analyst_id, stage, Decision.SUBMITTED, None)
 
 
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):

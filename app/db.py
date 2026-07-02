@@ -150,6 +150,16 @@ def update_scene_status(conn, scene_id, new_status):
     )
     conn.commit()
 
+def submit_scene_transition(conn, scene_id, new_status, claimed_by):
+    """set status and claim after an analyst submission. Used for both first
+    submission (2, claimed_by None) and resubmission (5, claimed_by None; or
+    6, claimed_by = the supervisor already associated with the scene)"""
+    conn.execute(
+        "UPDATE scenes SET status = ?, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (new_status, claimed_by, scene_id)
+    )
+    conn.commit()
+
 def reset_scene(conn, scene_id):
     """supervisor admin reset: wipe all ownership and return scene to unclaimed pool"""
     conn.execute("""
