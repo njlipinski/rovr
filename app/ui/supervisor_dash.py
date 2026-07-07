@@ -282,6 +282,7 @@ class SupervisorDashboard(Dashboard):
             ("Mark Bad Scene",     "handle_mark_bad_scene"),
             ("Release",            "handle_release"),
             ("Open in ROI Studio", "handle_my_queue_open_roi"),
+            ("Open in Notebook",   "handle_my_queue_open_notebook"),
             ("See Notes",          "handle_my_queue_see_notes"),
             ("Science Notes",      "handle_my_queue_see_science_notes"),
             ("Flag Scene",         "handle_my_queue_flag"),
@@ -299,6 +300,7 @@ class SupervisorDashboard(Dashboard):
         for label, handler in [
             ("Claim",              "handle_claim"),
             ("Open in ROI Studio", "handle_pool_open_roi"),
+            ("Open in Notebook",   "handle_pool_open_notebook"),
             ("See Notes",          "handle_pool_see_notes"),
             ("Science Notes",      "handle_pool_see_science_notes"),
             ("Flag Scene",         "handle_pool_flag"),
@@ -315,6 +317,7 @@ class SupervisorDashboard(Dashboard):
         assert layout is not None
         for label, handler in [
             ("Open in ROI Studio", "handle_in_progress_open_roi"),
+            ("Open in Notebook",   "handle_in_progress_open_notebook"),
             ("See Notes",          "handle_in_progress_see_notes"),
             ("Science Notes",      "handle_in_progress_see_science_notes"),
             ("Flag Scene",         "handle_in_progress_flag"),
@@ -331,6 +334,7 @@ class SupervisorDashboard(Dashboard):
         assert layout is not None
         for label, handler in [
             ("Open in ROI Studio", "handle_master_open_roi"),
+            ("Open in Notebook",   "handle_master_open_notebook"),
             ("See Notes",          "handle_master_see_notes"),
             ("Science Notes",      "handle_master_see_science_notes"),
             ("Flag Scene",         "handle_master_flag"),
@@ -428,6 +432,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             super().handle_open_roi(scene_id)
 
+    def handle_my_queue_open_notebook(self):
+        scene_id = self.selected_id(self.my_queue_table)
+        if scene_id is not None:
+            super().handle_open_notebook(scene_id)
+
     def handle_my_queue_see_notes(self):
         scene_id = self.selected_id(self.my_queue_table)
         if scene_id is not None:
@@ -466,6 +475,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             super().handle_open_roi(scene_id)
 
+    def handle_pool_open_notebook(self):
+        scene_id = self.selected_id(self.pool_table)
+        if scene_id is not None:
+            super().handle_open_notebook(scene_id)
+
     def handle_pool_see_notes(self):
         scene_id = self.selected_id(self.pool_table)
         if scene_id is not None:
@@ -488,6 +502,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             super().handle_open_roi(scene_id)
 
+    def handle_in_progress_open_notebook(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is not None:
+            super().handle_open_notebook(scene_id)
+
     def handle_in_progress_see_notes(self):
         scene_id = self.selected_id(self.in_progress_table)
         if scene_id is not None:
@@ -509,6 +528,11 @@ class SupervisorDashboard(Dashboard):
         scene_id = self.selected_id(self.master_table)
         if scene_id is not None:
             super().handle_open_roi(scene_id)
+
+    def handle_master_open_notebook(self):
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is not None:
+            super().handle_open_notebook(scene_id)
 
     def handle_master_see_notes(self):
         scene_id = self.selected_id(self.master_table)

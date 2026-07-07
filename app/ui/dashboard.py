@@ -8,9 +8,10 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
+    QApplication,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor
+from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
 from app.models import SceneStatus, SceneFlag, Role
 from app.paths import FolderKind, kind_path
 from app.local_settings import (
@@ -58,6 +59,11 @@ class WordSelectTextEdit(QTextEdit):
     _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
 
     def mouseDoubleClickEvent(self, event):
+        # Call super() first: besides doing Qt's default word selection (which we
+        # override below), it arms Qt's internal triple-click timer as a side
+        # effect. Returning early without calling it would silently break
+        # triple-click-to-select-paragraph on the third click.
+        super().mouseDoubleClickEvent(event)
         cursor = self.cursorForPosition(event.pos())
         block = cursor.block()
         pos_in_block = cursor.positionInBlock()
@@ -67,7 +73,6 @@ class WordSelectTextEdit(QTextEdit):
                 cursor.setPosition(block.position() + m.end(), QTextCursor.MoveMode.KeepAnchor)
                 self.setTextCursor(cursor)
                 return
-        super().mouseDoubleClickEvent(event)
 
 
 class SceneTable(QTableWidget):
@@ -371,6 +376,12 @@ def _format_science_note_row(row):
     return f"{header}\n{content}" if content else header
 
 
+def _format_science_notes_for_roi_studio(thread):
+    """Concatenate a science notes thread (rows from get_science_notes) into the
+    single metadata string ROI Studio's --notes argument expects."""
+    return "\n\n---\n\n".join(_format_science_note_row(row) for row in thread)
+
+
 class NotesDialog(QDialog):
     """Read-write dialog showing a note thread for a scene, allowing new notes,
     and letting the author (or a supervisor) edit/delete past notes.
@@ -403,6 +414,8 @@ class NotesDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.itemSelectionChanged.connect(self._update_edit_buttons)
         layout.addWidget(self.list)
 
@@ -1115,6 +1128,14 @@ class Dashboard(QMainWindow):
             sel = self._find_sel_file(scene)
             if sel:
                 args.append(sel)
+            fits = self._find_fits_file(scene)  # noqa: F841 — not yet sent, see TODO below
+            # TODO: current ROI Studio build doesn't accept a FITS path yet. Once it
+            # does, send it here (exact position/flag TBD — update alongside --notes):
+            # if fits:
+            #     args.append(fits)
+            notes_thread = get_science_notes(self.conn, scene_id)
+            if notes_thread:
+                args += ['--notes', _format_science_notes_for_roi_studio(notes_thread)]
 
         try:
             if sys.platform == 'darwin':
@@ -1125,8 +1146,31 @@ class Dashboard(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
-    def _find_sel_file(self, scene):
-        """Return the path to the most recent .sel file for this scene under working/, or None."""
+    def handle_open_notebook(self, scene_id):
+        """Open the MER Analyst's Notebook to this scene's Sol Summary, and copy
+        the sol number to the clipboard. The Notebook's own left-hand Sol
+        navigator can't be set via URL — it's driven by a stateful ASP.NET
+        postback, not a link — so pasting the sol there is the fastest way to
+        reach its other panels (Data Products, Mosaics, Targets, etc.)."""
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Database Error", f"Could not load scene: {e}")
+            return
+        if not scene:
+            return
+        rover, sol, _, _ = parse_scene_key(scene['scene_key'])
+        if not rover or not sol:
+            QMessageBox.warning(self, "Missing Data", "Could not determine rover/sol for this scene.")
+            return
+        sol_num = int(sol)
+        url = f"https://an.rsl.wustl.edu/{rover.lower()}/AN/an3.aspx?it=SS&ii={sol_num}"
+        QApplication.clipboard().setText(str(sol_num))
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _find_scene_file(self, scene, ext):
+        """Return the path to the most recent file with the given extension (e.g.
+        '.sel', '.fits') for this scene under working/, or None."""
         rover  = scene['rover']
         sol    = scene['sol']
         seq_id = scene['seq_id']
@@ -1148,13 +1192,21 @@ class Dashboard(QMainWindow):
             is_versioned = n.startswith(base_name + '_v') and n[len(base_name) + 2:].isdigit()
             if not (is_base or is_versioned):
                 continue
-            sel_path = os.path.join(entry.path, base_name + '.sel')
-            if os.path.isfile(sel_path):
-                candidates.append(sel_path)
+            file_path = os.path.join(entry.path, base_name + ext)
+            if os.path.isfile(file_path):
+                candidates.append(file_path)
 
         if not candidates:
             return None
         return max(candidates, key=os.path.getmtime)
+
+    def _find_sel_file(self, scene):
+        """Return the path to the most recent .sel file for this scene under working/, or None."""
+        return self._find_scene_file(scene, '.sel')
+
+    def _find_fits_file(self, scene):
+        """Return the path to the most recent .fits file for this scene under working/, or None."""
+        return self._find_scene_file(scene, '.fits')
 
     def _show_notes(self, scene_id, scene_name):
         NotesDialog(

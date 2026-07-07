@@ -20,6 +20,7 @@ from app.models import SceneStatus, Decision
 _MY_QUEUE_BUTTONS = {
     SceneStatus.CLAIMED: [
         ("Open in ROI Studio", "handle_open_roi"),
+        ("Open in Notebook",   "handle_open_notebook"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
         ("Science Notes",      "handle_see_science_notes"),
@@ -28,6 +29,7 @@ _MY_QUEUE_BUTTONS = {
     ],
     SceneStatus.IN_REVIEW: [
         ("Open in ROI Studio", "handle_open_roi"),
+        ("Open in Notebook",   "handle_open_notebook"),
         ("Approve",            "handle_approve"),
         ("Kick Back",          "handle_kick_back"),
         ("See Notes",          "handle_see_notes"),
@@ -37,6 +39,7 @@ _MY_QUEUE_BUTTONS = {
     ],
     SceneStatus.NEEDS_REVISION: [
         ("Open in ROI Studio", "handle_open_roi"),
+        ("Open in Notebook",   "handle_open_notebook"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
         ("Science Notes",      "handle_see_science_notes"),
@@ -222,6 +225,7 @@ class AnalystDashboard(Dashboard):
         layout = self.in_progress_tray.layout()
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_in_progress_open_roi),
+                             ("Open in Notebook",   self.handle_in_progress_open_notebook),
                              ("Open Notes",         self.handle_in_progress_notes),
                              ("Science Notes",      self.handle_in_progress_science_notes),
                              ("Flag Scene",         self.handle_flag_from_in_progress)]:
@@ -260,6 +264,7 @@ class AnalystDashboard(Dashboard):
         layout = self.completed_tray.layout()
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_completed_open_roi),
+                             ("Open in Notebook",   self.handle_completed_open_notebook),
                              ("See Notes",          self.handle_completed_notes),
                              ("Science Notes",      self.handle_completed_science_notes)]:
             btn = QPushButton(label)
@@ -273,6 +278,12 @@ class AnalystDashboard(Dashboard):
         if scene_id is None:
             return
         super().handle_open_roi(scene_id)
+
+    def handle_in_progress_open_notebook(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is None:
+            return
+        super().handle_open_notebook(scene_id)
 
     def handle_in_progress_notes(self):
         scene_id = self.selected_id(self.in_progress_table)
@@ -313,6 +324,12 @@ class AnalystDashboard(Dashboard):
             return
         super().handle_open_roi(scene_id)
 
+    def handle_completed_open_notebook(self):
+        scene_id = self.selected_id(self.completed_table)
+        if scene_id is None:
+            return
+        super().handle_open_notebook(scene_id)
+
     def handle_completed_notes(self):
         scene_id = self.selected_id(self.completed_table)
         if scene_id is None:
@@ -344,6 +361,12 @@ class AnalystDashboard(Dashboard):
         if scene_id is None:
             return
         super().handle_open_roi(scene_id)
+
+    def handle_open_notebook(self):
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        super().handle_open_notebook(scene_id)
 
     def handle_submit(self):
         scene_id = self._my_queue_scene_id()
