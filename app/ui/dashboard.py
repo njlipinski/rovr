@@ -7,11 +7,12 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
-    QCheckBox, QStyledItemDelegate, QStyle,
+    QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor
 from app.models import SceneStatus, SceneFlag, Role
+from app.paths import FolderKind, kind_path
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
@@ -24,7 +25,8 @@ from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_the
 # at next launch (Qt reads it once, at startup) — not live.
 UI_SCALE_PRESETS = (1.0, 1.25, 1.5, 1.75, 2.0)
 from app.db import (
-    get_scene_thread, add_note, get_scene_by_id,
+    get_scene_thread, add_note, update_note, delete_note, get_scene_by_id,
+    get_science_notes, add_science_note, update_science_note, delete_science_note,
     update_username, update_user_password, get_user_by_username,
     update_scene_flags, get_user_stats, get_all_user_stats,
 )
@@ -347,33 +349,76 @@ _DECISION_LABEL = {
 }
 
 
+def _format_thread_row(row):
+    """Format one row from get_scene_thread (a note or a review entry)."""
+    tag = 'Note' if row['type'] == 'note' else _DECISION_LABEL.get(row['decision'], row['decision'])
+    header = f"[{row['timestamp']}]  {row['author_name']}  ({tag})"
+    content = row['content']
+    return f"{header}\n{content}" if content else header
+
+
 def _format_thread(thread):
     """Format a scene thread (rows from get_scene_thread) into a plain-text string."""
     if not thread:
         return "No history yet."
-    parts = []
-    for row in thread:
-        tag = 'Note' if row['type'] == 'note' else _DECISION_LABEL.get(row['decision'], row['decision'])
-        header = f"[{row['timestamp']}]  {row['author_name']}  ({tag})"
-        content = row['content']
-        parts.append(f"{header}\n{content}" if content else header)
-    return "\n\n---\n\n".join(parts)
+    return "\n\n---\n\n".join(_format_thread_row(row) for row in thread)
+
+
+def _format_science_note_row(row):
+    """Format one row from get_science_notes."""
+    header = f"[{row['timestamp']}]  {row['author_name']}"
+    content = row['content']
+    return f"{header}\n{content}" if content else header
 
 
 class NotesDialog(QDialog):
-    """Read-write dialog showing the note thread for a scene and allowing new notes."""
-    def __init__(self, conn, scene_id, scene_name, author_id, parent=None):
+    """Read-write dialog showing a note thread for a scene, allowing new notes,
+    and letting the author (or a supervisor) edit/delete past notes.
+
+    Parameterized by get_thread/format_row/add_note_fn/update_note_fn/delete_note_fn
+    so the same dialog backs both the regular Notes thread (manual notes + review
+    housekeeping, via get_scene_thread/add_note/update_note/delete_note) and the
+    Science Notes thread (manual, scientifically-relevant notes only, via
+    get_science_notes/add_science_note/update_science_note/delete_science_note).
+    Review/decision entries are never editable — reviews are an append-only
+    audit log — so edit/delete are only enabled for rows where type == 'note'.
+    """
+    def __init__(self, conn, scene_id, scene_name, author_id, parent=None,
+                 title="Notes", get_thread=get_scene_thread,
+                 format_row=_format_thread_row, add_note_fn=add_note,
+                 update_note_fn=update_note, delete_note_fn=delete_note,
+                 is_supervisor=False):
         super().__init__(parent)
         self.conn = conn
         self.scene_id = scene_id
         self.author_id = author_id
-        self.setWindowTitle(f"Notes — {scene_name}")
+        self._get_thread = get_thread
+        self._format_row = format_row
+        self._add_note_fn = add_note_fn
+        self._update_note_fn = update_note_fn
+        self._delete_note_fn = delete_note_fn
+        self._is_supervisor = is_supervisor
+        self.setWindowTitle(f"{title} — {scene_name}")
         self.setMinimumSize(520, 440)
         layout = QVBoxLayout(self)
 
-        self.display = WordSelectTextEdit()
-        self.display.setReadOnly(True)
-        layout.addWidget(self.display)
+        self.list = QListWidget()
+        self.list.itemSelectionChanged.connect(self._update_edit_buttons)
+        layout.addWidget(self.list)
+
+        edit_row = QWidget()
+        edit_layout = QHBoxLayout(edit_row)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_btn = QPushButton("Edit")
+        self.edit_btn.clicked.connect(self._on_edit)
+        self.edit_btn.setEnabled(False)
+        self.delete_btn = QPushButton("Delete")
+        self.delete_btn.clicked.connect(self._on_delete)
+        self.delete_btn.setEnabled(False)
+        edit_layout.addWidget(self.edit_btn)
+        edit_layout.addWidget(self.delete_btn)
+        edit_layout.addStretch()
+        layout.addWidget(edit_row)
 
         layout.addWidget(QLabel("Add a note:"))
         self.input = WordSelectTextEdit()
@@ -395,16 +440,69 @@ class NotesDialog(QDialog):
 
         self._refresh()
 
+    def _can_edit(self, row):
+        return row['type'] == 'note' and (self._is_supervisor or row['author_id'] == self.author_id)
+
     def _refresh(self):
-        thread = get_scene_thread(self.conn, self.scene_id)
-        self.display.setPlainText(_format_thread(thread))
+        self.list.clear()
+        thread = self._get_thread(self.conn, self.scene_id)
+        if not thread:
+            item = QListWidgetItem("No notes yet.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list.addItem(item)
+        for row in thread:
+            item = QListWidgetItem(self._format_row(row))
+            item.setData(Qt.ItemDataRole.UserRole, dict(row))
+            self.list.addItem(item)
+        self._update_edit_buttons()
+
+    def _selected_row(self):
+        items = self.list.selectedItems()
+        if not items:
+            return None
+        return items[0].data(Qt.ItemDataRole.UserRole)
+
+    def _update_edit_buttons(self):
+        row = self._selected_row()
+        editable = row is not None and self._can_edit(row)
+        self.edit_btn.setEnabled(editable)
+        self.delete_btn.setEnabled(editable)
+
+    def _on_edit(self):
+        row = self._selected_row()
+        if row is None or not self._can_edit(row):
+            return
+        new_body, ok = QInputDialog.getMultiLineText(
+            self, "Edit Note", "Note:", row['content'] or ''
+        )
+        if not ok:
+            return
+        new_body = new_body.strip()
+        if not new_body:
+            QMessageBox.warning(self, "Empty Note", "Note text cannot be empty.")
+            return
+        self._update_note_fn(self.conn, row['id'], new_body)
+        self._refresh()
+
+    def _on_delete(self):
+        row = self._selected_row()
+        if row is None or not self._can_edit(row):
+            return
+        confirm = QMessageBox.question(
+            self, "Delete Note", "Delete this note?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._delete_note_fn(self.conn, row['id'])
+        self._refresh()
 
     def _on_add(self):
         body = self.input.toPlainText().strip()
         if not body:
             QMessageBox.warning(self, "Empty Note", "Please enter some text before adding a note.")
             return
-        add_note(self.conn, self.scene_id, self.author_id, body)
+        self._add_note_fn(self.conn, self.scene_id, self.author_id, body)
         self.input.clear()
         self._refresh()
 
@@ -1012,7 +1110,7 @@ class Dashboard(QMainWindow):
         if scene:
             rover, sol, seq_id, _ = parse_scene_key(scene['scene_key'])
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
-            folder_path = os.path.join(PANCAM_PATH, rover, 'iof', f'sol{sol}')
+            folder_path = kind_path(PANCAM_PATH, rover, sol, FolderKind.IOF)
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
             sel = self._find_sel_file(scene)
             if sel:
@@ -1037,7 +1135,7 @@ class Dashboard(QMainWindow):
             return None
 
         base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma}"
-        sol_dir   = os.path.join(PANCAM_PATH, rover, 'practice', f'sol{sol:04d}')
+        sol_dir   = kind_path(PANCAM_PATH, rover, sol, FolderKind.PRACTICE)
         if not os.path.isdir(sol_dir):
             return None
 
@@ -1059,7 +1157,19 @@ class Dashboard(QMainWindow):
         return max(candidates, key=os.path.getmtime)
 
     def _show_notes(self, scene_id, scene_name):
-        NotesDialog(self.conn, scene_id, scene_name, self.user['id'], self).exec()
+        NotesDialog(
+            self.conn, scene_id, scene_name, self.user['id'], self,
+            is_supervisor=(self.user['role'] == Role.SUPERVISOR),
+        ).exec()
+
+    def _show_science_notes(self, scene_id, scene_name):
+        NotesDialog(
+            self.conn, scene_id, scene_name, self.user['id'], self,
+            title="Science Notes", get_thread=get_science_notes,
+            format_row=_format_science_note_row, add_note_fn=add_science_note,
+            update_note_fn=update_science_note, delete_note_fn=delete_science_note,
+            is_supervisor=(self.user['role'] == Role.SUPERVISOR),
+        ).exec()
 
     def handle_flag_scene(self, scene_id, scene_name=""):
         """Open FlagDialog, persist flag changes, and always save an auto-note."""

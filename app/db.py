@@ -327,23 +327,73 @@ def add_note(conn, scene_id, author_id, body):
     conn.commit()
 
 
+def update_note(conn, note_id, body):
+    """Edit a manually-authored note. Reviews are append-only and never editable —
+    only rows in the notes table can be targeted here."""
+    conn.execute("UPDATE notes SET body = ? WHERE id = ?", (body, note_id))
+    conn.commit()
+
+
+def delete_note(conn, note_id):
+    conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    conn.commit()
+
+
 def get_scene_thread(conn, scene_id):
     """Interleaved notes + review-comments for a scene, oldest first.
-    Each row: type ('note'/'review'), timestamp, author_name, content, decision."""
+    Each row: type ('note'/'review'), id, timestamp, author_name, author_id,
+    content, decision. Only type='note' rows are ever editable/deletable —
+    reviews are an append-only audit log."""
     return conn.execute("""
-        SELECT 'note' AS type, n.timestamp, u.username AS author_name,
-               n.body AS content, NULL AS decision
+        SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
+               n.author_id AS author_id, n.body AS content, NULL AS decision
         FROM notes n
         JOIN users u ON n.author_id = u.id
         WHERE n.scene_id = ?
         UNION ALL
-        SELECT 'review' AS type, r.timestamp, u.username AS author_name,
-               r.comments AS content, r.decision
+        SELECT 'review' AS type, r.id AS id, r.timestamp, u.username AS author_name,
+               r.reviewer_id AS author_id, r.comments AS content, r.decision
         FROM reviews r
         JOIN users u ON r.reviewer_id = u.id
         WHERE r.scene_id = ?
         ORDER BY timestamp ASC
     """, (scene_id, scene_id)).fetchall()
+
+
+def add_science_note(conn, scene_id, author_id, body):
+    conn.execute(
+        "INSERT INTO science_notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
+        (scene_id, author_id, body)
+    )
+    conn.execute(
+        "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+        (scene_id,)
+    )
+    conn.commit()
+
+
+def update_science_note(conn, note_id, body):
+    conn.execute("UPDATE science_notes SET body = ? WHERE id = ?", (body, note_id))
+    conn.commit()
+
+
+def delete_science_note(conn, note_id):
+    conn.execute("DELETE FROM science_notes WHERE id = ?", (note_id,))
+    conn.commit()
+
+
+def get_science_notes(conn, scene_id):
+    """Manually authored science notes for a scene, oldest first. No housekeeping
+    (review/decision) entries — only rows added directly through the Science Notes
+    dialog."""
+    return conn.execute("""
+        SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
+               n.author_id AS author_id, n.body AS content
+        FROM science_notes n
+        JOIN users u ON n.author_id = u.id
+        WHERE n.scene_id = ?
+        ORDER BY n.timestamp ASC
+    """, (scene_id,)).fetchall()
 
 
 def get_analyst_in_progress(conn, user_id):
@@ -532,6 +582,15 @@ def initialize_db():
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id    INTEGER NOT NULL REFERENCES scenes (id),
+            author_id   INTEGER NOT NULL REFERENCES users (id),
+            timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            body        TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS science_notes (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id    INTEGER NOT NULL REFERENCES scenes (id),
             author_id   INTEGER NOT NULL REFERENCES users (id),

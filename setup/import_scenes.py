@@ -7,11 +7,18 @@ Primary method: CSV observation table (--csv path/to/obs_table.csv)
   existing scene_keys).
 
 Fallback method: folder scan (default, no flag needed)
-  Walks MERA/iof/sol#### and MERB/iof/sol#### directories looking for
+  Walks MERA/####/iof and MERB/####/iof directories looking for
   Pancam IOF .IMG files. obs_ix defaults to 0 (single-pointing assumption).
 
 Additional utility: --build-folders
-  Mirrors the iof/sol#### tree into any named subfolder (default: working).
+  Ensures a named subfolder (default: working) exists inside every existing
+  rover/#### directory.
+
+Migration utility: --restructure-folders
+  One-off move of the old rover/<kind>/solNNNN layout into the new
+  rover/NNNN/<kind> layout (dropping the 'sol' prefix), for kind in
+  iof, edr, practice, working. Safe to re-run — skips anything already
+  migrated or missing.
 
 Usage:
     python setup/import_scenes.py --csv obs_table.csv
@@ -24,11 +31,15 @@ Usage:
     python setup/import_scenes.py --build-folders
     python setup/import_scenes.py --build-folders --subfolder edr
 
+    python setup/import_scenes.py --restructure-folders
+    python setup/import_scenes.py --restructure-folders --dry-run
+
     python setup/import_scenes.py --wipe
 """
 
 import csv
 import re
+import shutil
 import sys
 import argparse
 from pathlib import Path
@@ -36,14 +47,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import get_db_connection, initialize_db
+from app.paths import FolderKind, sol_dir_name
 
 try:
     from config import PANCAM_PATH
 except ImportError:
     PANCAM_PATH = None
 
-# sol#### folder pattern used by both the folder scanner and build_folders
-_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
+# Current sol folder pattern (no 'sol' prefix) — used by the folder scanner
+# and build_folders, which both operate on the current rover/####/<kind> layout.
+_SOL_RE = re.compile(r'^(\d{4})$')
+
+# Old sol folder pattern ('solNNNN') — used only by --restructure-folders to
+# find sol directories still in the pre-migration rover/<kind>/solNNNN layout.
+_OLD_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
 
 # MER Pancam filename stem is exactly 27 chars (plus 3-char extension):
 # [scid(1)][inst(1)][sclk(9)][prod(3)][site(4)][seq(5)][eye(1)][filt(1)][who(1)][ver(1)]
@@ -86,6 +103,11 @@ def _sol_num(dirname):
     return int(m.group(1)) if m else None
 
 
+def _old_sol_num(dirname):
+    m = _OLD_SOL_RE.match(dirname)
+    return int(m.group(1)) if m else None
+
+
 def _parse_img(filename):
     """Return seqID (e.g. 'P2210') if this is an IOF Pancam .IMG, else None."""
     name_lower = filename.lower()
@@ -103,11 +125,10 @@ def _parse_img(filename):
     return seq_field   # full 'P####' token
 
 
-def _scan_sol(sol_dir, rover):
-    """Scan one sol directory and return a dict of scene_key -> scene dict."""
-    sol = _sol_num(sol_dir.name)
+def _scan_sol(iof_dir, rover, sol):
+    """Scan one sol's iof directory and return a dict of scene_key -> scene dict."""
     scenes = {}
-    for f in sol_dir.iterdir():
+    for f in iof_dir.iterdir():
         if not f.is_file():
             continue
         seq_id = _parse_img(f.name)
@@ -130,12 +151,12 @@ def _scan_sol(sol_dir, rover):
 
 
 def import_scenes_from_folders(conn, pancam_root, dry_run=False):
-    """Walk iof directories for both rovers and import scenes by folder scan."""
+    """Walk ####/iof directories for both rovers and import scenes by folder scan."""
     pancam_path = Path(pancam_root)
     rovers = ["MERA", "MERB"]
 
     for rover in rovers:
-        rover_root = pancam_path / rover / "iof"
+        rover_root = pancam_path / rover
         if not rover_root.exists():
             print(f"Skipping {rover}: {rover_root} does not exist.")
             continue
@@ -159,7 +180,12 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
             pct = i / total_sols * 100
             prefix = f"[{i}/{total_sols}  {pct:5.1f}%]  {rover} sol{sol:04d}"
 
-            scenes = _scan_sol(sol_dir, rover)
+            iof_dir = sol_dir / FolderKind.IOF
+            if not iof_dir.exists():
+                print(f"{prefix}  (no iof/ subfolder)")
+                continue
+
+            scenes = _scan_sol(iof_dir, rover, sol)
             if not scenes:
                 print(f"{prefix}  (no IOF scenes)")
                 continue
@@ -338,32 +364,78 @@ def wipe_scenes(conn):
 
 
 def build_folders(pancam_root, subfolder_name):
-    """Mirror each rover's iof/sol#### tree into rover/<subfolder_name>/sol####.
+    """Ensure <subfolder_name> exists inside every existing rover/#### directory.
 
     Creates missing directories; skips any that already exist. No-op safe.
     """
     pancam_path = Path(pancam_root)
     rovers = ["MERA", "MERB"]
     for rover in rovers:
-        iof_root = pancam_path / rover / "iof"
-        if not iof_root.exists():
-            print(f"Skipping {rover}: {iof_root} does not exist.")
+        rover_root = pancam_path / rover
+        if not rover_root.exists():
+            print(f"Skipping {rover}: {rover_root} does not exist.")
             continue
 
-        target_root = pancam_path / rover / subfolder_name
         sol_dirs = sorted(
-            d for d in iof_root.iterdir()
+            d for d in rover_root.iterdir()
             if d.is_dir() and _sol_num(d.name) is not None
         )
         created = skipped = 0
         for sol_dir in sol_dirs:
-            target = target_root / sol_dir.name
+            target = sol_dir / subfolder_name
             if target.exists():
                 skipped += 1
             else:
                 target.mkdir(parents=True, exist_ok=True)
                 created += 1
-        print(f"{rover}/{subfolder_name}: {created} created, {skipped} already existed")
+        print(f"{rover}/*/{subfolder_name}: {created} created, {skipped} already existed")
+
+
+def restructure_folders(pancam_root, dry_run=False):
+    """One-off migration: move rover/<kind>/solNNNN -> rover/NNNN/<kind>
+    for kind in FolderKind.ALL (iof, edr, practice, working), dropping the
+    old 'sol' prefix to match the current bare-#### naming convention.
+
+    Safe to re-run — skips any sol dir whose destination already exists,
+    and removes each <kind> root once it's empty.
+    """
+    pancam_path = Path(pancam_root)
+    rovers = ["MERA", "MERB"]
+
+    for rover in rovers:
+        rover_root = pancam_path / rover
+        if not rover_root.exists():
+            print(f"Skipping {rover}: {rover_root} does not exist.")
+            continue
+
+        moved = skipped = 0
+        for kind in FolderKind.ALL:
+            kind_root = rover_root / kind
+            if not kind_root.exists():
+                continue
+
+            sol_dirs = sorted(
+                d for d in kind_root.iterdir()
+                if d.is_dir() and _old_sol_num(d.name) is not None
+            )
+            for sol_dir in sol_dirs:
+                sol = _old_sol_num(sol_dir.name)
+                target = rover_root / sol_dir_name(sol) / kind
+                if target.exists():
+                    print(f"  SKIP {sol_dir} -> {target} (destination already exists)")
+                    skipped += 1
+                    continue
+                label = "[dry run] " if dry_run else ""
+                print(f"  {label}{sol_dir} -> {target}")
+                if not dry_run:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(sol_dir), str(target))
+                moved += 1
+
+            if not dry_run and kind_root.exists() and not any(kind_root.iterdir()):
+                kind_root.rmdir()
+
+        print(f"{rover}: {moved} sol/<kind> folder(s) moved, {skipped} skipped (destination existed)")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -392,13 +464,19 @@ def main():
     parser.add_argument(
         "--build-folders",
         action="store_true",
-        help="Mirror iof/sol#### tree into a new subfolder (see --subfolder).",
+        help="Ensure a subfolder (see --subfolder) exists under every rover/#### directory.",
     )
     parser.add_argument(
         "--subfolder",
         default="working",
         metavar="NAME",
-        help="Subfolder name to create under each rover root (default: working).",
+        help="Subfolder name to create under each rover/#### directory (default: working).",
+    )
+    parser.add_argument(
+        "--restructure-folders",
+        action="store_true",
+        help="One-off migration: move rover/<kind>/solNNNN into rover/NNNN/<kind> "
+             "for kind in iof, edr, practice, working.",
     )
     parser.add_argument(
         "--wipe",
@@ -407,7 +485,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # --build-folders doesn't need a DB connection
+    # --build-folders and --restructure-folders don't need a DB connection
     if args.build_folders:
         if not args.path:
             print("Error: --build-folders requires --path or PANCAM_PATH in config.py.")
@@ -416,6 +494,16 @@ def main():
             print(f"Error: '{args.path}' does not exist.")
             sys.exit(1)
         build_folders(args.path, args.subfolder)
+        return
+
+    if args.restructure_folders:
+        if not args.path:
+            print("Error: --restructure-folders requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not Path(args.path).exists():
+            print(f"Error: '{args.path}' does not exist.")
+            sys.exit(1)
+        restructure_folders(args.path, dry_run=args.dry_run)
         return
 
     initialize_db()

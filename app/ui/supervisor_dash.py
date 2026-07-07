@@ -283,6 +283,7 @@ class SupervisorDashboard(Dashboard):
             ("Release",            "handle_release"),
             ("Open in ROI Studio", "handle_my_queue_open_roi"),
             ("See Notes",          "handle_my_queue_see_notes"),
+            ("Science Notes",      "handle_my_queue_see_science_notes"),
             ("Flag Scene",         "handle_my_queue_flag"),
         ]:
             btn = QPushButton(label)
@@ -299,6 +300,7 @@ class SupervisorDashboard(Dashboard):
             ("Claim",              "handle_claim"),
             ("Open in ROI Studio", "handle_pool_open_roi"),
             ("See Notes",          "handle_pool_see_notes"),
+            ("Science Notes",      "handle_pool_see_science_notes"),
             ("Flag Scene",         "handle_pool_flag"),
         ]:
             btn = QPushButton(label)
@@ -314,6 +316,7 @@ class SupervisorDashboard(Dashboard):
         for label, handler in [
             ("Open in ROI Studio", "handle_in_progress_open_roi"),
             ("See Notes",          "handle_in_progress_see_notes"),
+            ("Science Notes",      "handle_in_progress_see_science_notes"),
             ("Flag Scene",         "handle_in_progress_flag"),
         ]:
             btn = QPushButton(label)
@@ -329,6 +332,7 @@ class SupervisorDashboard(Dashboard):
         for label, handler in [
             ("Open in ROI Studio", "handle_master_open_roi"),
             ("See Notes",          "handle_master_see_notes"),
+            ("Science Notes",      "handle_master_see_science_notes"),
             ("Flag Scene",         "handle_master_flag"),
             ("Edit Scene",         "handle_edit_scene"),
             ("Reset Scene",        "handle_reset_scene"),
@@ -429,6 +433,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             self._show_notes(scene_id, self._scene_name_from(self.my_queue_table))
 
+    def handle_my_queue_see_science_notes(self):
+        scene_id = self.selected_id(self.my_queue_table)
+        if scene_id is not None:
+            self._show_science_notes(scene_id, self._scene_name_from(self.my_queue_table))
+
     def handle_my_queue_flag(self):
         scene_id = self.selected_id(self.my_queue_table)
         if scene_id is not None:
@@ -462,6 +471,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             self._show_notes(scene_id, self._scene_name_from(self.pool_table))
 
+    def handle_pool_see_science_notes(self):
+        scene_id = self.selected_id(self.pool_table)
+        if scene_id is not None:
+            self._show_science_notes(scene_id, self._scene_name_from(self.pool_table))
+
     def handle_pool_flag(self):
         scene_id = self.selected_id(self.pool_table)
         if scene_id is not None:
@@ -479,6 +493,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is not None:
             self._show_notes(scene_id, self._scene_name_from(self.in_progress_table))
 
+    def handle_in_progress_see_science_notes(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is not None:
+            self._show_science_notes(scene_id, self._scene_name_from(self.in_progress_table))
+
     def handle_in_progress_flag(self):
         scene_id = self.selected_id(self.in_progress_table)
         if scene_id is not None:
@@ -495,6 +514,11 @@ class SupervisorDashboard(Dashboard):
         scene_id = self.selected_id(self.master_table)
         if scene_id is not None:
             self._show_notes(scene_id, self._scene_name_from(self.master_table))
+
+    def handle_master_see_science_notes(self):
+        scene_id = self.selected_id(self.master_table)
+        if scene_id is not None:
+            self._show_science_notes(scene_id, self._scene_name_from(self.master_table))
 
     def handle_master_flag(self):
         scene_id = self.selected_id(self.master_table)

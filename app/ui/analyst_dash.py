@@ -22,6 +22,7 @@ _MY_QUEUE_BUTTONS = {
         ("Open in ROI Studio", "handle_open_roi"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
+        ("Science Notes",      "handle_see_science_notes"),
         ("Flag Scene",         "handle_flag_from_my_queue"),
         ("Release",            "handle_release"),
     ],
@@ -30,6 +31,7 @@ _MY_QUEUE_BUTTONS = {
         ("Approve",            "handle_approve"),
         ("Kick Back",          "handle_kick_back"),
         ("See Notes",          "handle_see_notes"),
+        ("Science Notes",      "handle_see_science_notes"),
         ("Flag Scene",         "handle_flag_from_my_queue"),
         ("Release",            "handle_release"),
     ],
@@ -37,6 +39,7 @@ _MY_QUEUE_BUTTONS = {
         ("Open in ROI Studio", "handle_open_roi"),
         ("Submit",             "handle_submit"),
         ("See Notes",          "handle_see_notes"),
+        ("Science Notes",      "handle_see_science_notes"),
         ("Flag Scene",         "handle_flag_from_my_queue"),
     ],
 }
@@ -215,6 +218,7 @@ class AnalystDashboard(Dashboard):
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_in_progress_open_roi),
                              ("Open Notes",         self.handle_in_progress_notes),
+                             ("Science Notes",      self.handle_in_progress_science_notes),
                              ("Flag Scene",         self.handle_flag_from_in_progress)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
@@ -251,7 +255,8 @@ class AnalystDashboard(Dashboard):
         layout = self.completed_tray.layout()
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_completed_open_roi),
-                             ("See Notes",          self.handle_completed_notes)]:
+                             ("See Notes",          self.handle_completed_notes),
+                             ("Science Notes",      self.handle_completed_science_notes)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
@@ -272,6 +277,17 @@ class AnalystDashboard(Dashboard):
         cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_notes(scene_id, scene_name)
+        set_scene_viewed_at(scene_id)
+        self.refresh_task_list()
+
+    def handle_in_progress_science_notes(self):
+        scene_id = self.selected_id(self.in_progress_table)
+        if scene_id is None:
+            return
+        row = self.in_progress_table.currentRow()
+        cells = [self.in_progress_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_science_notes(scene_id, scene_name)
         set_scene_viewed_at(scene_id)
         self.refresh_task_list()
 
@@ -300,6 +316,15 @@ class AnalystDashboard(Dashboard):
         cells = [self.completed_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_notes(scene_id, scene_name)
+
+    def handle_completed_science_notes(self):
+        scene_id = self.selected_id(self.completed_table)
+        if scene_id is None:
+            return
+        row = self.completed_table.currentRow()
+        cells = [self.completed_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_science_notes(scene_id, scene_name)
 
     # ── My Queue handlers ───────────────────────────────────────────────
 
@@ -371,6 +396,15 @@ class AnalystDashboard(Dashboard):
         cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_notes(scene_id, scene_name)
+
+    def handle_see_science_notes(self):
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        row = self.my_queue_table.currentRow()
+        cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
+        scene_name = " ".join(c.text() if c else '' for c in cells)
+        self._show_science_notes(scene_id, scene_name)
 
     def handle_flag_from_my_queue(self):
         scene_id = self._my_queue_scene_id()
