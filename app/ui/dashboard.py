@@ -1126,7 +1126,7 @@ class Dashboard(QMainWindow):
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
     def _find_sel_file(self, scene):
-        """Return the path to the most recent .sel file for this scene under practice/, or None."""
+        """Return the path to the most recent .sel file for this scene under working/, or None."""
         rover  = scene['rover']
         sol    = scene['sol']
         seq_id = scene['seq_id']
@@ -1135,7 +1135,7 @@ class Dashboard(QMainWindow):
             return None
 
         base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma}"
-        sol_dir   = kind_path(PANCAM_PATH, rover, sol, FolderKind.PRACTICE)
+        sol_dir   = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
         if not os.path.isdir(sol_dir):
             return None
 

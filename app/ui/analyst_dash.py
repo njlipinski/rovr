@@ -56,7 +56,7 @@ class AnalystDashboard(Dashboard):
     def _build_main_content(self):
         # My Work Queue — Status at col 4 so selected_status() still works
         self.my_queue_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1", "Flags"]
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1", "Flags", "Name"]
         )
         apply_flag_delegate(self.my_queue_table)
         self.my_queue_tray = make_button_tray()
@@ -65,28 +65,28 @@ class AnalystDashboard(Dashboard):
 
         # In Progress — scenes I've contributed to that are still moving
         self.in_progress_table = make_scene_table(
-            ["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Status", "Current Holder"]
+            ["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Status", "Current Holder", "Name"]
         )
         self.in_progress_tray = make_button_tray()
         self.in_progress_table.itemSelectionChanged.connect(self._update_in_progress_tray)
         in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
 
         # Ready for Peer Review
-        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags"])
+        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name"])
         apply_flag_delegate(self.review_queue_table)
         self.review_queue_tray = make_button_tray()
         self.review_queue_table.itemSelectionChanged.connect(self._update_review_tray)
         review_section = make_section("Ready for Peer Review", self.review_queue_table, self.review_queue_tray)
 
         # Unclaimed Scenes
-        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags"])
+        self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name"])
         apply_flag_delegate(self.scene_pool_table)
         self.scene_pool_tray = make_button_tray()
         self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
         pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
 
         # My Completed Scenes
-        self.completed_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "My Role"])
+        self.completed_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Name"])
         self.completed_tray = make_button_tray()
         self.completed_table.itemSelectionChanged.connect(self._update_completed_tray)
         completed_section = make_section("My Completed Scenes", self.completed_table, self.completed_tray)
@@ -136,6 +136,7 @@ class AnalystDashboard(Dashboard):
             self.my_queue_table.setItem(i, 5, QTableWidgetItem(obs))
             self.my_queue_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.my_queue_table.setItem(i, 7, make_flag_item(scene['flags']))
+            self.my_queue_table.setItem(i, 8, QTableWidgetItem(scene['name']))
         self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
 
         scene_viewed = get_all_scene_viewed_times()
@@ -151,6 +152,7 @@ class AnalystDashboard(Dashboard):
             self.in_progress_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
             self.in_progress_table.setItem(i, 6, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.in_progress_table.setItem(i, 7, QTableWidgetItem(scene['current_holder'] or '—'))
+            self.in_progress_table.setItem(i, 8, QTableWidgetItem(scene['name']))
             viewed_at = scene_viewed.get(str(scene['id']), '')
             if (scene['updated_at'] or '') > viewed_at:
                 for col in range(1, self.in_progress_table.columnCount()):
@@ -167,6 +169,7 @@ class AnalystDashboard(Dashboard):
             self.review_queue_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.review_queue_table.setItem(i, 4, QTableWidgetItem(obs))
             self.review_queue_table.setItem(i, 5, make_flag_item(scene['flags']))
+            self.review_queue_table.setItem(i, 6, QTableWidgetItem(scene['name']))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
@@ -178,6 +181,7 @@ class AnalystDashboard(Dashboard):
             self.scene_pool_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.scene_pool_table.setItem(i, 4, QTableWidgetItem(obs))
             self.scene_pool_table.setItem(i, 5, make_flag_item(scene['flags']))
+            self.scene_pool_table.setItem(i, 6, QTableWidgetItem(scene['name']))
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         def fill_completed(i, scene):
@@ -188,6 +192,7 @@ class AnalystDashboard(Dashboard):
             self.completed_table.setItem(i, 3, QTableWidgetItem(seq_id))
             self.completed_table.setItem(i, 4, QTableWidgetItem(obs))
             self.completed_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
+            self.completed_table.setItem(i, 6, QTableWidgetItem(scene['name']))
         self._fill_table(self.completed_table, get_analyst_completed(self.conn, analyst_id), fill_completed)
 
         self._update_my_queue_tray()
