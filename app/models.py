@@ -33,7 +33,7 @@ class SceneFlag:
     BAD_SCENE   = 1
     BAD_FILTERS = 2
 
-    LABELS = {0: "Other", 1: "Bad scene", 2: "Bad filters"}
+    LABELS = {0: "Other", 1: "Bad scene", 2: "Missing filters"}
     COLORS = {0: "#4A90D9", 1: "#E05A5A", 2: "#F5A623"}
 
     @staticmethod

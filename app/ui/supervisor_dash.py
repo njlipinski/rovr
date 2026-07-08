@@ -122,6 +122,23 @@ _MASTER_COLS = [
     ("Updated",       "updated_at"),
 ]
 
+_MASTER_STATUS_COL = next(i for i, (h, _) in enumerate(_MASTER_COLS) if h == "Status")
+
+
+def _master_status_counts(table):
+    """Per-status breakdown of the master table's current rows, read straight
+    from the Status column so it always matches what's actually displayed."""
+    counts = {}
+    for row in range(table.rowCount()):
+        item = table.item(row, _MASTER_STATUS_COL)
+        label = item.text() if item else ''
+        counts[label] = counts.get(label, 0) + 1
+    parts = []
+    for status in sorted(SceneStatus.LABELS):
+        label = SceneStatus.LABELS[status]
+        parts.append(f"{counts.get(label, 0)} {label.title()}")
+    return ", ".join(parts)
+
 
 class SupervisorDashboard(Dashboard):
 
@@ -170,7 +187,10 @@ class SupervisorDashboard(Dashboard):
         apply_flag_delegate(self.master_table)
         self.master_tray = make_button_tray()
         self.master_table.itemSelectionChanged.connect(self._update_master_tray)
-        master_section = make_section("All Scenes", self.master_table, self.master_tray)
+        self.master_section = make_section(
+            "All Scenes", self.master_table, self.master_tray, count_fn=_master_status_counts
+        )
+        master_section = self.master_section
 
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(my_queue_section)
@@ -262,6 +282,7 @@ class SupervisorDashboard(Dashboard):
                     item = QTableWidgetItem(str(scene[field] or '—'))
                 self.master_table.setItem(i, col, item)
         self._fill_table(self.master_table, get_all_scenes(self.conn), fill_master)
+        self.master_section.refresh_count()
 
         self._update_my_queue_tray()
         self._update_pool_tray()
@@ -293,7 +314,7 @@ class SupervisorDashboard(Dashboard):
 
     def _update_pool_tray(self):
         clear_tray(self.pool_tray)
-        if self.selected_id(self.pool_table) is None:
+        if not self.selected_ids(self.pool_table):
             return
         layout = self.pool_tray.layout()
         assert layout is not None
@@ -455,20 +476,25 @@ class SupervisorDashboard(Dashboard):
     # ── Supervisor Pool handlers ──────────────────────────────────────────
 
     def handle_claim(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is None:
+        scene_ids = self.selected_ids(self.pool_table)
+        if not scene_ids:
             return
-        try:
-            success = claim_for_supervisor_review(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Claim Failed", str(e))
-            self.refresh_task_list()
-            return
-        if success:
-            QMessageBox.information(self, "Claimed", "Scene added to your work queue.")
-        else:
-            QMessageBox.warning(self, "Claim Failed", "Scene is no longer available.")
+        claimed, skipped = 0, 0
+        for scene_id in scene_ids:
+            try:
+                if claim_for_supervisor_review(self.conn, scene_id, self.user['id']):
+                    claimed += 1
+                else:
+                    skipped += 1
+            except ValueError:
+                skipped += 1
         self.refresh_task_list()
+        if skipped == 0:
+            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
+        elif claimed == 0:
+            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
+        else:
+            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
 
     def handle_pool_open_roi(self):
         scene_id = self.selected_id(self.pool_table)

@@ -191,8 +191,12 @@ def clear_tray(tray):
             item.widget().deleteLater()
 
 
-def make_section(label_text, table, tray):
-    """Wrap a label + table + button tray into a QSplitter-compatible widget."""
+def make_section(label_text, table, tray, count_fn=None):
+    """Wrap a label + table + button tray into a QSplitter-compatible widget.
+
+    If count_fn is given, it's called with the table and should return a
+    string breakdown (e.g. "12 Unclaimed, 8 Claimed") appended after the
+    item count; it's recomputed alongside the count on every row change."""
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 4, 0, 4)
@@ -201,7 +205,12 @@ def make_section(label_text, table, tray):
 
     def _update_count():
         n = table.rowCount()
-        header_label.setText(f"{label_text} — {n} item{'s' if n != 1 else ''}")
+        text = f"{label_text} — {n} item{'s' if n != 1 else ''}"
+        if count_fn is not None:
+            breakdown = count_fn(table)
+            if breakdown:
+                text += f"  ({breakdown})"
+        header_label.setText(text)
 
     _update_count()
 
@@ -213,6 +222,10 @@ def make_section(label_text, table, tray):
     layout.addWidget(header_label)
     layout.addWidget(table)
     layout.addWidget(tray)
+    # rowsInserted fires from setRowCount(), before _fill_table's loop populates
+    # cells -- so a count_fn reading cell contents needs an explicit recount
+    # once filling actually finishes. Exposed here for callers to invoke.
+    widget.refresh_count = _update_count
     return widget
 
 
