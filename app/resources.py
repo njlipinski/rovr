@@ -16,4 +16,4 @@ def resource_path(*parts):
     return os.path.join(base, *parts)
 
 
-ICON_PATH = resource_path('app', 'assets', 'ROVRicon.png')
+ICON_PATH = resource_path('app', 'assets', 'rover_illustration.png')

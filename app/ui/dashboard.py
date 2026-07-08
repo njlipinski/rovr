@@ -1125,14 +1125,9 @@ class Dashboard(QMainWindow):
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
             folder_path = kind_path(PANCAM_PATH, rover, sol, FolderKind.IOF)
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
-            sel = self._find_sel_file(scene)
-            if sel:
-                args.append(sel)
-            fits = self._find_fits_file(scene)  # noqa: F841 — not yet sent, see TODO below
-            # TODO: current ROI Studio build doesn't accept a FITS path yet. Once it
-            # does, send it here (exact position/flag TBD — update alongside --notes):
-            # if fits:
-            #     args.append(fits)
+            roi_file = self._find_fits_file(scene) or self._find_sel_file(scene)
+            if roi_file:
+                args.append(roi_file)
             notes_thread = get_science_notes(self.conn, scene_id)
             if notes_thread:
                 args += ['--notes', _format_science_notes_for_roi_studio(notes_thread)]

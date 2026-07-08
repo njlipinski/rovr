@@ -17,7 +17,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('matplotlib') + [('app/assets/ROVRicon.png', 'app/assets')],
+    datas=collect_data_files('matplotlib') + [('app/assets/rover_illustration.png', 'app/assets')],
     hiddenimports=[
         'PyQt6.sip',
         'bcrypt._bcrypt',
@@ -69,13 +69,13 @@ exe = EXE(
     entitlements_file=None,
     # PyInstaller converts the PNG to .ico/.icns via Pillow at build time
     # (Pillow is pulled in transitively by matplotlib).
-    icon='app/assets/ROVRicon.png',
+    icon='app/assets/rover_illustration.png',
 )
 
 # macOS only — produces dist/rovr.app; ignored on Windows
 app = BUNDLE(
     exe,
     name='rovr.app',
-    icon='app/assets/ROVRicon.png',
+    icon='app/assets/rover_illustration.png',
     bundle_identifier='edu.wwu.marsresearchgroup.rovr',
 )
