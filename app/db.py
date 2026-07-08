@@ -1,7 +1,25 @@
 # app/db.py
 """all SQLite operations, including creating tables and inserting data"""
 import sqlite3
+import time
 from config import DB_PATH
+
+
+def _with_lock_retry(fn, retries=3, base_delay=0.15):
+    """Run fn() (a DB write), retrying if SQLite reports the database is
+    locked by another writer. DB_PATH lives on a shared network drive, so a
+    second analyst's near-simultaneous write is expected to occasionally
+    collide here -- it should resolve almost immediately once their short
+    transaction commits. Backs off between attempts; re-raises whatever it
+    last saw once retries are exhausted, or immediately for any other kind
+    of error (those aren't going to be fixed by waiting)."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if 'locked' not in str(e).lower() or attempt == retries - 1:
+                raise
+            time.sleep(base_delay * (attempt + 1))
 
 
 # ── User functions ────────────────────────────────────────────────────────────
@@ -316,27 +334,33 @@ def get_scene_history(conn, scene_id):
 
 
 def add_note(conn, scene_id, author_id, body):
-    conn.execute(
-        "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
-        (scene_id, author_id, body)
-    )
-    conn.execute(
-        "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (scene_id,)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
+            (scene_id, author_id, body)
+        )
+        conn.execute(
+            "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (scene_id,)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def update_note(conn, note_id, body):
     """Edit a manually-authored note. Reviews are append-only and never editable —
     only rows in the notes table can be targeted here."""
-    conn.execute("UPDATE notes SET body = ? WHERE id = ?", (body, note_id))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE notes SET body = ? WHERE id = ?", (body, note_id))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def delete_note(conn, note_id):
-    conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-    conn.commit()
+    def _write():
+        conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def get_scene_thread(conn, scene_id):
@@ -361,25 +385,31 @@ def get_scene_thread(conn, scene_id):
 
 
 def add_science_note(conn, scene_id, author_id, body):
-    conn.execute(
-        "INSERT INTO science_notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
-        (scene_id, author_id, body)
-    )
-    conn.execute(
-        "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (scene_id,)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "INSERT INTO science_notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
+            (scene_id, author_id, body)
+        )
+        conn.execute(
+            "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (scene_id,)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def update_science_note(conn, note_id, body):
-    conn.execute("UPDATE science_notes SET body = ? WHERE id = ?", (body, note_id))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE science_notes SET body = ? WHERE id = ?", (body, note_id))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def delete_science_note(conn, note_id):
-    conn.execute("DELETE FROM science_notes WHERE id = ?", (note_id,))
-    conn.commit()
+    def _write():
+        conn.execute("DELETE FROM science_notes WHERE id = ?", (note_id,))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 def get_science_notes(conn, scene_id):

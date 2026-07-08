@@ -458,7 +458,12 @@ class NotesDialog(QDialog):
 
     def _refresh(self):
         self.list.clear()
-        thread = self._get_thread(self.conn, self.scene_id)
+        try:
+            thread = self._get_thread(self.conn, self.scene_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Load Failed", f"Could not load notes: {e}")
+            self._update_edit_buttons()
+            return
         if not thread:
             item = QListWidgetItem("No notes yet.")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -494,7 +499,11 @@ class NotesDialog(QDialog):
         if not new_body:
             QMessageBox.warning(self, "Empty Note", "Note text cannot be empty.")
             return
-        self._update_note_fn(self.conn, row['id'], new_body)
+        try:
+            self._update_note_fn(self.conn, row['id'], new_body)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Failed", f"Could not save note: {e}")
+            return
         self._refresh()
 
     def _on_delete(self):
@@ -507,7 +516,11 @@ class NotesDialog(QDialog):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self._delete_note_fn(self.conn, row['id'])
+        try:
+            self._delete_note_fn(self.conn, row['id'])
+        except Exception as e:
+            QMessageBox.warning(self, "Delete Failed", f"Could not delete note: {e}")
+            return
         self._refresh()
 
     def _on_add(self):
@@ -515,7 +528,11 @@ class NotesDialog(QDialog):
         if not body:
             QMessageBox.warning(self, "Empty Note", "Please enter some text before adding a note.")
             return
-        self._add_note_fn(self.conn, self.scene_id, self.author_id, body)
+        try:
+            self._add_note_fn(self.conn, self.scene_id, self.author_id, body)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Failed", f"Could not save note: {e}")
+            return
         self.input.clear()
         self._refresh()
 
