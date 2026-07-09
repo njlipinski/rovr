@@ -1,13 +1,14 @@
 # controller.py
 """controller logic"""
 from app.db import (
-    get_scene_by_id, update_scene_status, log_review,
+    get_scene_by_id,
     claim_from_pool as db_claim_from_pool,
     claim_for_review as db_claim_for_review,
     claim_for_supervisor_review as db_claim_for_supervisor_review,
     release_scene, release_supervisor_review as db_release_supervisor_review,
-    set_peer_reviewer, set_supervisor, get_user_by_id, reset_scene,
-    update_scene_assignments, submit_scene_transition,
+    get_user_by_id,
+    record_submission, record_peer_review, record_supervisor_review,
+    record_force_release, record_scene_edit, record_scene_reset,
 )
 from app.models import SceneStatus, Decision, Stage, SceneFlag
 
@@ -42,8 +43,7 @@ def submit_scene(conn, scene_id, analyst_id):
     else:
         new_status, claimed_by, stage = SceneStatus.PENDING_SUPERVISOR, None, Stage.RESUBMISSION
 
-    submit_scene_transition(conn, scene_id, new_status, claimed_by)
-    log_review(conn, scene_id, analyst_id, stage, Decision.SUBMITTED, None)
+    record_submission(conn, scene_id, new_status, claimed_by, analyst_id, stage, Decision.SUBMITTED, None)
 
 
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
@@ -56,13 +56,11 @@ def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
         raise ValueError("Analysts cannot review their own scenes")
     if decision not in Decision.VALID_REVIEW:
         raise ValueError(f"Invalid decision: {decision}")
-    set_peer_reviewer(conn, scene_id, reviewer_id)
     if decision == Decision.APPROVE:
-        update_scene_status(conn, scene_id, SceneStatus.PENDING_SUPERVISOR)
-        log_review(conn, scene_id, reviewer_id, Stage.PEER_REVIEW, Decision.APPROVED, comments)
+        new_status, review_decision = SceneStatus.PENDING_SUPERVISOR, Decision.APPROVED
     else:
-        update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
-        log_review(conn, scene_id, reviewer_id, Stage.PEER_REVIEW, Decision.NEEDS_REVISION, comments)
+        new_status, review_decision = SceneStatus.NEEDS_REVISION, Decision.NEEDS_REVISION
+    record_peer_review(conn, scene_id, reviewer_id, new_status, Stage.PEER_REVIEW, review_decision, comments)
 
 
 def mark_scene_issues(conn, scene_id, supervisor_id):
@@ -74,12 +72,12 @@ def mark_scene_issues(conn, scene_id, supervisor_id):
         raise ValueError("Scene is not in supervisor review")
     if scene['claimed_by'] != supervisor_id:
         raise ValueError("You can only mark scenes you have claimed")
-    set_supervisor(conn, scene_id, supervisor_id)
-    update_scene_status(conn, scene_id, SceneStatus.ISSUES)
     flag_ids = SceneFlag.parse(scene['flags'])
     flags_note = ', '.join(SceneFlag.LABELS[f] for f in sorted(flag_ids)) if flag_ids else 'no flags recorded'
-    log_review(conn, scene_id, supervisor_id, Stage.SUPERVISOR_REVIEW, Decision.MARKED_ISSUES,
-               f"Marked as issues (flags: {flags_note})")
+    record_supervisor_review(
+        conn, scene_id, supervisor_id, SceneStatus.ISSUES, Stage.SUPERVISOR_REVIEW,
+        Decision.MARKED_ISSUES, f"Marked as issues (flags: {flags_note})"
+    )
 
 
 def claim_for_supervisor_review(conn, scene_id, supervisor_id):
@@ -112,13 +110,11 @@ def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
         raise ValueError("You can only review scenes you have claimed")
     if decision not in Decision.VALID_REVIEW:
         raise ValueError(f"Invalid decision: {decision}")
-    set_supervisor(conn, scene_id, supervisor_id)
     if decision == Decision.APPROVE:
-        update_scene_status(conn, scene_id, SceneStatus.APPROVED)
-        log_review(conn, scene_id, supervisor_id, Stage.SUPERVISOR_REVIEW, Decision.APPROVED, comments)
+        new_status, review_decision = SceneStatus.APPROVED, Decision.APPROVED
     else:
-        update_scene_status(conn, scene_id, SceneStatus.NEEDS_REVISION)
-        log_review(conn, scene_id, supervisor_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION, comments)
+        new_status, review_decision = SceneStatus.NEEDS_REVISION, Decision.NEEDS_REVISION
+    record_supervisor_review(conn, scene_id, supervisor_id, new_status, Stage.SUPERVISOR_REVIEW, review_decision, comments)
 
 
 def claim_scene_for_review(conn, scene_id, analyst_id):
@@ -146,14 +142,12 @@ def release_scene_to_pool(conn, scene_id, analyst_id):
 def force_release_scene(conn, scene_id, supervisor_id, comments=""):
     """supervisor force-releases a stuck claim back to the appropriate pool"""
     scene = get_scene_by_id(conn, scene_id)
-    if scene['status'] == SceneStatus.IN_SUPERVISOR_REVIEW:
-        db_release_supervisor_review(conn, scene_id)
-    elif scene['status'] in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
-        release_scene(conn, scene_id)
-    else:
+    if scene['status'] not in (SceneStatus.IN_SUPERVISOR_REVIEW, SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
         raise ValueError("Scene does not have a releasable claim")
-    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.FORCE_RELEASED,
-               comments or f"Claim by user {scene['claimed_by']} force-released")
+    record_force_release(
+        conn, scene_id, supervisor_id, Stage.ADMIN, Decision.FORCE_RELEASED,
+        comments or f"Claim by user {scene['claimed_by']} force-released"
+    )
 
 
 def _describe_scene_edit(conn, old_scene, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by):
@@ -192,12 +186,13 @@ def supervisor_edit_scene(conn, scene_id, supervisor_id, new_status,
     note = comments or _describe_scene_edit(
         conn, old_scene, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by
     )
-    update_scene_assignments(conn, scene_id, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by)
-    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.SCENE_EDITED, note)
+    record_scene_edit(
+        conn, scene_id, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by,
+        supervisor_id, Stage.ADMIN, Decision.SCENE_EDITED, note
+    )
 
 
 def supervisor_reset_scene(conn, scene_id, supervisor_id, comments=None):
     """supervisor fully resets a scene to unclaimed, wiping all ownership fields"""
-    reset_scene(conn, scene_id)
     note = comments or "Scene reset to unclaimed by supervisor"
-    log_review(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.RESET, note)
+    record_scene_reset(conn, scene_id, supervisor_id, Stage.ADMIN, Decision.RESET, note)

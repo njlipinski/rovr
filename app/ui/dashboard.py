@@ -1,6 +1,7 @@
 """base dashboard — shared layout, widgets, and utilities for all dashboard types"""
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from PyQt6.QtWidgets import (
@@ -581,7 +582,17 @@ class ChangeUsernameDialog(QDialog):
         if get_user_by_username(self._conn, new_name):
             QMessageBox.warning(self, "Taken", f'"{new_name}" is already in use.')
             return
-        update_username(self._conn, self._user['id'], new_name)
+        try:
+            update_username(self._conn, self._user['id'], new_name)
+        except sqlite3.OperationalError as e:
+            if 'locked' not in str(e).lower():
+                raise
+            QMessageBox.warning(
+                self, "Database Busy",
+                "The shared database is busy and this couldn't be saved, even after "
+                "retrying. Please try again in a moment."
+            )
+            return
         self.accept()
 
     def new_username(self):
@@ -631,7 +642,17 @@ class ChangePasswordDialog(QDialog):
         if new_pw != self._confirm.text():
             QMessageBox.warning(self, "Mismatch", "New passwords do not match.")
             return
-        update_user_password(self._conn, self._user['id'], hash_password(new_pw))
+        try:
+            update_user_password(self._conn, self._user['id'], hash_password(new_pw))
+        except sqlite3.OperationalError as e:
+            if 'locked' not in str(e).lower():
+                raise
+            QMessageBox.warning(
+                self, "Database Busy",
+                "The shared database is busy and this couldn't be saved, even after "
+                "retrying. Please try again in a moment."
+            )
+            return
         self.accept()
 
 
@@ -1029,6 +1050,30 @@ class Dashboard(QMainWindow):
 
     # ── Shared helpers available to all subclasses ──────────────────────
 
+    def _run_db_action(self, fn, error_title="Action Failed"):
+        """Run fn() (typically a lambda calling a controller function that
+        writes to the DB), showing a message box instead of crashing for
+        either a business-rule violation (ValueError, raised by controller.py)
+        or database lock contention that outlasted every retry
+        (sqlite3.OperationalError -- DB_PATH lives on a shared network drive,
+        so writes already retry for up to ~30s inside db.py before this can
+        even be reached). Returns True on success, False if fn() raised."""
+        try:
+            fn()
+            return True
+        except ValueError as e:
+            QMessageBox.warning(self, error_title, str(e))
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e).lower():
+                QMessageBox.warning(
+                    self, "Database Busy",
+                    "The shared database is busy and this action couldn't be saved, "
+                    "even after retrying. Please try again in a moment."
+                )
+            else:
+                raise
+        return False
+
     def _fill_table(self, table, rows, fill_fn):
         """Populate a table safely: disables sorting during insert to prevent mid-fill reorders."""
         table.setSortingEnabled(False)
@@ -1255,7 +1300,6 @@ class Dashboard(QMainWindow):
             return
         new_flags = dialog.get_flags()
         old_flags = dialog.old_flags
-        update_scene_flags(self.conn, scene_id, SceneFlag.serialize(new_flags))
         added   = new_flags - old_flags
         removed = old_flags - new_flags
         parts = []
@@ -1269,7 +1313,11 @@ class Dashboard(QMainWindow):
         user_text = dialog.get_note_text()
         if user_text:
             note_body += f"\n{user_text}"
-        add_note(self.conn, scene_id, self.user['id'], note_body)
+
+        def _save():
+            update_scene_flags(self.conn, scene_id, SceneFlag.serialize(new_flags))
+            add_note(self.conn, scene_id, self.user['id'], note_body)
+        self._run_db_action(_save, "Flag Update Failed")
         self.refresh_task_list()
 
     def _show_menu(self, btn):

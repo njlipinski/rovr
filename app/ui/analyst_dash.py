@@ -372,28 +372,25 @@ class AnalystDashboard(Dashboard):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        try:
-            submit_scene(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Submit Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Submitted", "Scene submitted.")
+        ok = self._run_db_action(
+            lambda: submit_scene(self.conn, scene_id, self.user['id']), "Submit Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Submitted", "Scene submitted.")
 
     def handle_approve(self):
         """Peer reviewer approves a status-3 scene → status 5."""
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        try:
-            peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
-        except ValueError as e:
-            QMessageBox.warning(self, "Approve Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Approved", "Scene approved and sent to supervisor.")
+        ok = self._run_db_action(
+            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None),
+            "Approve Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Approved", "Scene approved and sent to supervisor.")
 
     def handle_kick_back(self):
         """Peer reviewer kicks back a status-3 scene → status 4 with optional notes."""
@@ -407,14 +404,13 @@ class AnalystDashboard(Dashboard):
         if dialog.exec() != KickBackDialog.DialogCode.Accepted:
             return
         comments = dialog.get_comments()
-        try:
-            peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comments)
-        except ValueError as e:
-            QMessageBox.warning(self, "Kick Back Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
+        ok = self._run_db_action(
+            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comments),
+            "Kick Back Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
 
     def handle_see_notes(self):
         scene_id = self._my_queue_scene_id()
@@ -447,14 +443,12 @@ class AnalystDashboard(Dashboard):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        try:
-            release_scene_to_pool(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Release Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Released", "Scene released back to pool.")
+        ok = self._run_db_action(
+            lambda: release_scene_to_pool(self.conn, scene_id, self.user['id']), "Release Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Released", "Scene released back to pool.")
 
     # ── Pool / review queue handlers ────────────────────────────────────
 
@@ -463,14 +457,19 @@ class AnalystDashboard(Dashboard):
         if not scene_ids:
             return
         claimed, skipped = 0, 0
-        for scene_id in scene_ids:
-            try:
-                if claim_from_pool(self.conn, scene_id, self.user['id']):
-                    claimed += 1
-                else:
+        def _claim_all():
+            nonlocal claimed, skipped
+            for scene_id in scene_ids:
+                try:
+                    if claim_from_pool(self.conn, scene_id, self.user['id']):
+                        claimed += 1
+                    else:
+                        skipped += 1
+                except ValueError:
                     skipped += 1
-            except ValueError:
-                skipped += 1
+        if not self._run_db_action(_claim_all, "Claim Failed"):
+            self.refresh_task_list()
+            return
         self.refresh_task_list()
         if skipped == 0:
             QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
@@ -493,14 +492,19 @@ class AnalystDashboard(Dashboard):
         if not scene_ids:
             return
         claimed, skipped = 0, 0
-        for scene_id in scene_ids:
-            try:
-                if claim_scene_for_review(self.conn, scene_id, self.user['id']):
-                    claimed += 1
-                else:
+        def _claim_all():
+            nonlocal claimed, skipped
+            for scene_id in scene_ids:
+                try:
+                    if claim_scene_for_review(self.conn, scene_id, self.user['id']):
+                        claimed += 1
+                    else:
+                        skipped += 1
+                except ValueError:
                     skipped += 1
-            except ValueError:
-                skipped += 1
+        if not self._run_db_action(_claim_all, "Claim Failed"):
+            self.refresh_task_list()
+            return
         self.refresh_task_list()
         if skipped == 0:
             QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed for peer review.")

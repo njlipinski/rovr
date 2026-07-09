@@ -385,14 +385,13 @@ class SupervisorDashboard(Dashboard):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        try:
-            supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
-        except ValueError as e:
-            QMessageBox.warning(self, "Approve Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Approved", "Scene approved.")
+        ok = self._run_db_action(
+            lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None),
+            "Approve Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Approved", "Scene approved.")
 
     def handle_kick_back(self):
         scene_id = self._my_queue_scene_id()
@@ -403,16 +402,15 @@ class SupervisorDashboard(Dashboard):
         if dialog.exec() != KickBackDialog.DialogCode.Accepted:
             return
         comments = dialog.get_comments()
-        try:
-            supervisor_review_scene(
+        ok = self._run_db_action(
+            lambda: supervisor_review_scene(
                 self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comments
-            )
-        except ValueError as e:
-            QMessageBox.warning(self, "Kick Back Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
+            ),
+            "Kick Back Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()
@@ -426,27 +424,23 @@ class SupervisorDashboard(Dashboard):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        try:
-            mark_scene_issues(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Mark Bad Scene Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Marked", "Scene marked as having issues.")
+        ok = self._run_db_action(
+            lambda: mark_scene_issues(self.conn, scene_id, self.user['id']), "Mark Bad Scene Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Marked", "Scene marked as having issues.")
 
     def handle_release(self):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        try:
-            release_supervisor_review(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Release Failed", str(e))
-            self.refresh_task_list()
-            return
-        QMessageBox.information(self, "Released", "Scene returned to supervisor pool.")
+        ok = self._run_db_action(
+            lambda: release_supervisor_review(self.conn, scene_id, self.user['id']), "Release Failed"
+        )
         self.refresh_task_list()
+        if ok:
+            QMessageBox.information(self, "Released", "Scene returned to supervisor pool.")
 
     def handle_my_queue_open_roi(self):
         scene_id = self.selected_id(self.my_queue_table)
@@ -480,14 +474,19 @@ class SupervisorDashboard(Dashboard):
         if not scene_ids:
             return
         claimed, skipped = 0, 0
-        for scene_id in scene_ids:
-            try:
-                if claim_for_supervisor_review(self.conn, scene_id, self.user['id']):
-                    claimed += 1
-                else:
+        def _claim_all():
+            nonlocal claimed, skipped
+            for scene_id in scene_ids:
+                try:
+                    if claim_for_supervisor_review(self.conn, scene_id, self.user['id']):
+                        claimed += 1
+                    else:
+                        skipped += 1
+                except ValueError:
                     skipped += 1
-            except ValueError:
-                skipped += 1
+        if not self._run_db_action(_claim_all, "Claim Failed"):
+            self.refresh_task_list()
+            return
         self.refresh_task_list()
         if skipped == 0:
             QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
@@ -585,17 +584,17 @@ class SupervisorDashboard(Dashboard):
         dialog = EditSceneDialog(self.conn, scene, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            supervisor_edit_scene(
+        self._run_db_action(
+            lambda: supervisor_edit_scene(
                 self.conn, scene_id, self.user['id'], dialog.get_status(),
                 owner_id=dialog.get_owner_id(),
                 peer_reviewer_id=dialog.get_peer_reviewer_id(),
                 scene_supervisor_id=dialog.get_supervisor_id(),
                 claimed_by=dialog.get_claimed_by(),
                 comments=dialog.get_notes(),
-            )
-        except ValueError as e:
-            QMessageBox.warning(self, "Edit Scene Failed", str(e))
+            ),
+            "Edit Scene Failed"
+        )
         self.refresh_task_list()
 
     def handle_reset_scene(self):
@@ -610,8 +609,7 @@ class SupervisorDashboard(Dashboard):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        try:
-            supervisor_reset_scene(self.conn, scene_id, self.user['id'])
-        except ValueError as e:
-            QMessageBox.warning(self, "Reset Failed", str(e))
+        self._run_db_action(
+            lambda: supervisor_reset_scene(self.conn, scene_id, self.user['id']), "Reset Failed"
+        )
         self.refresh_task_list()

@@ -5,21 +5,36 @@ import time
 from config import DB_PATH
 
 
-def _with_lock_retry(fn, retries=3, base_delay=0.15):
+def _with_lock_retry(fn, retries=25, delay=0.1):
     """Run fn() (a DB write), retrying if SQLite reports the database is
     locked by another writer. DB_PATH lives on a shared network drive, so a
-    second analyst's near-simultaneous write is expected to occasionally
-    collide here -- it should resolve almost immediately once their short
-    transaction commits. Backs off between attempts; re-raises whatever it
-    last saw once retries are exhausted, or immediately for any other kind
-    of error (those aren't going to be fixed by waiting)."""
+    second user's near-simultaneous write is expected to occasionally collide
+    here -- it should resolve within a second or two once their transaction
+    commits. Every write in this module goes through this helper (or the
+    connection's own short busy timeout, see get_db_connection) so that a
+    lock never surfaces as a crash.
+
+    Each attempt's own busy timeout (see get_db_connection) already does the
+    real waiting -- it retries internally at a fine grain and returns the
+    instant the lock clears, rather than blocking for the full timeout
+    regardless. So by the time this except block runs, that 1s window has
+    already been spent failing; there is nothing to gain from sleeping long
+    here too. delay=0.1 just avoids hammering the network share back-to-back
+    while genuinely waiting out a longer hold. Combined with the connection's
+    own 1s busy timeout, worst case is a bounded ~27s of retrying before
+    giving up: fast in the common case (a real collision clears in well under
+    a second, often on the very first attempt), short enough that the UI
+    (frozen for the duration, since this runs on Qt's main thread) doesn't
+    hang for long if the network drive genuinely drops. Re-raises whatever it
+    last saw once retries are exhausted, or immediately for any other kind of
+    error (those aren't going to be fixed by waiting)."""
     for attempt in range(retries):
         try:
             return fn()
         except sqlite3.OperationalError as e:
             if 'locked' not in str(e).lower() or attempt == retries - 1:
                 raise
-            time.sleep(base_delay * (attempt + 1))
+            time.sleep(delay)
 
 
 # ── User functions ────────────────────────────────────────────────────────────
@@ -37,15 +52,19 @@ def get_all_users(conn):
     return conn.execute("SELECT * FROM users ORDER BY role, username").fetchall()
 
 def create_user(conn, username, password_hash, role):
-    conn.execute(
-        "INSERT INTO users (username, active, password_hash, role) VALUES (?, 1, ?, ?)",
-        (username, password_hash, role)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "INSERT INTO users (username, active, password_hash, role) VALUES (?, 1, ?, ?)",
+            (username, password_hash, role)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 def activate_user(conn, user_id):
-    conn.execute("UPDATE users SET active = 1 WHERE id = ?", (user_id,))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE users SET active = 1 WHERE id = ?", (user_id,))
+        conn.commit()
+    _with_lock_retry(_write)
 
 def deactivate_user(conn, user_id):
     """Deactivate user and return their open scenes to shared pools.
@@ -55,41 +74,49 @@ def deactivate_user(conn, user_id):
     Status 3 where the deactivated user is the peer reviewer (claimed_by) → 2: their
     claim is released so another analyst can pick up the review.
     Status 6 (supervisor's claimed scene) → 5: released back to the supervisor pool."""
-    conn.execute("""
-        UPDATE scenes
-        SET status = 0, owner_id = NULL, claimed_by = NULL,
-            updated_at = datetime('now', 'localtime')
-        WHERE owner_id = ? AND status IN (1, 4)
-    """, (user_id,))
-    conn.execute("""
-        UPDATE scenes
-        SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
-        WHERE owner_id = ? AND status = 3
-    """, (user_id,))
-    conn.execute("""
-        UPDATE scenes
-        SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
-        WHERE claimed_by = ? AND status = 3
-    """, (user_id,))
-    conn.execute("""
-        UPDATE scenes
-        SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime')
-        WHERE claimed_by = ? AND status = 6
-    """, (user_id,))
-    conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
-    conn.commit()
+    def _write():
+        conn.execute("""
+            UPDATE scenes
+            SET status = 0, owner_id = NULL, claimed_by = NULL,
+                updated_at = datetime('now', 'localtime')
+            WHERE owner_id = ? AND status IN (1, 4)
+        """, (user_id,))
+        conn.execute("""
+            UPDATE scenes
+            SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            WHERE owner_id = ? AND status = 3
+        """, (user_id,))
+        conn.execute("""
+            UPDATE scenes
+            SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            WHERE claimed_by = ? AND status = 3
+        """, (user_id,))
+        conn.execute("""
+            UPDATE scenes
+            SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            WHERE claimed_by = ? AND status = 6
+        """, (user_id,))
+        conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
+        conn.commit()
+    _with_lock_retry(_write)
 
 def update_user_role(conn, user_id, new_role):
-    conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
+        conn.commit()
+    _with_lock_retry(_write)
 
 def update_user_password(conn, user_id, new_password_hash):
-    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
+        conn.commit()
+    _with_lock_retry(_write)
 
 def update_username(conn, user_id, new_username):
-    conn.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
-    conn.commit()
+    def _write():
+        conn.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 # ── Scene functions ───────────────────────────────────────────────────────────
@@ -108,110 +135,60 @@ def update_username(conn, user_id, new_username):
 def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
     """create a scene; owner_id and roi_filename are None for pool-imported scenes
     (owner set at claim time, roi_filename set when analyst saves the .sel file)"""
-    conn.execute(
-        "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, status) VALUES (?, ?, ?, ?, 0)",
-        (name, scene_key, roi_filename, owner_id)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, status) VALUES (?, ?, ?, ?, 0)",
+            (name, scene_key, roi_filename, owner_id)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 def get_scene_by_id(conn, scene_id):
     return conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone()
 
 def claim_from_pool(conn, scene_id, analyst_id):
     """analyst 1 atomically claims an unclaimed scene (0 → 1), setting owner if not yet assigned"""
-    cur = conn.execute(
-        """UPDATE scenes
-           SET status = 1, claimed_by = ?,
-               owner_id = COALESCE(owner_id, ?)
-           WHERE id = ? AND status = 0""",
-        (analyst_id, analyst_id, scene_id)
-    )
-    conn.commit()
-    return cur.rowcount == 1
+    def _write():
+        cur = conn.execute(
+            """UPDATE scenes
+               SET status = 1, claimed_by = ?,
+                   owner_id = COALESCE(owner_id, ?)
+               WHERE id = ? AND status = 0""",
+            (analyst_id, analyst_id, scene_id)
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    return _with_lock_retry(_write)
 
 def claim_for_review(conn, scene_id, analyst_id):
     """analyst 2 atomically claims a scene for peer review (2 → 3)"""
-    cur = conn.execute(
-        "UPDATE scenes SET status = 3, claimed_by = ? WHERE id = ? AND status = 2 AND owner_id != ?",
-        (analyst_id, scene_id, analyst_id)
-    )
-    conn.commit()
-    return cur.rowcount == 1
+    def _write():
+        cur = conn.execute(
+            "UPDATE scenes SET status = 3, claimed_by = ? WHERE id = ? AND status = 2 AND owner_id != ?",
+            (analyst_id, scene_id, analyst_id)
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    return _with_lock_retry(_write)
 
 def release_scene(conn, scene_id):
     """release a claimed scene back to the appropriate pool (1 → 0, or 3 → 2)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] == 1:
         # Returning to Scene Pool — clear ownership so the next claimer starts fresh
-        conn.execute(
-            """UPDATE scenes
-               SET status = 0, owner_id = NULL, claimed_by = NULL,
-                   updated_at = datetime('now', 'localtime')
-               WHERE id = ?""",
-            (scene_id,)
-        )
+        sql = """UPDATE scenes
+                 SET status = 0, owner_id = NULL, claimed_by = NULL,
+                     updated_at = datetime('now', 'localtime')
+                 WHERE id = ?"""
     elif scene['status'] == 3:
         # Returning to Peer Review Pool — only clear the reviewer's claim
-        conn.execute(
-            "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
-            (scene_id,)
-        )
+        sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
     else:
         return
-    conn.commit()
-
-def update_scene_status(conn, scene_id, new_status):
-    """update scene status and clear any claim lock"""
-    conn.execute(
-        "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (new_status, scene_id)
-    )
-    conn.commit()
-
-def submit_scene_transition(conn, scene_id, new_status, claimed_by):
-    """set status and claim after an analyst submission. Used for both first
-    submission (2, claimed_by None) and resubmission (5, claimed_by None; or
-    6, claimed_by = the supervisor already associated with the scene)"""
-    conn.execute(
-        "UPDATE scenes SET status = ?, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (new_status, claimed_by, scene_id)
-    )
-    conn.commit()
-
-def reset_scene(conn, scene_id):
-    """supervisor admin reset: wipe all ownership and return scene to unclaimed pool"""
-    conn.execute("""
-        UPDATE scenes
-        SET status = 0,
-            owner_id = NULL,
-            peer_reviewer_id = NULL,
-            supervisor_id = NULL,
-            claimed_by = NULL,
-            updated_at = datetime('now', 'localtime')
-        WHERE id = ?
-    """, (scene_id,))
-    conn.commit()
-
-def update_scene_assignments(conn, scene_id, new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by):
-    """supervisor admin edit: set status and directly reassign owner, peer reviewer,
-    supervisor, and claimed_by in one write. Unlike the normal workflow transitions,
-    this intentionally bypasses the set-once rule for the three assignment fields —
-    it exists for correcting mis-assigned scenes."""
-    conn.execute("""
-        UPDATE scenes
-        SET status = ?, owner_id = ?, peer_reviewer_id = ?, supervisor_id = ?, claimed_by = ?,
-            updated_at = datetime('now', 'localtime')
-        WHERE id = ?
-    """, (new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by, scene_id))
-    conn.commit()
-
-def set_peer_reviewer(conn, scene_id, reviewer_id):
-    conn.execute("UPDATE scenes SET peer_reviewer_id = ? WHERE id = ?", (reviewer_id, scene_id))
-    conn.commit()
-
-def set_supervisor(conn, scene_id, supervisor_id):
-    conn.execute("UPDATE scenes SET supervisor_id = ? WHERE id = ?", (supervisor_id, scene_id))
-    conn.commit()
+    def _write():
+        conn.execute(sql, (scene_id,))
+        conn.commit()
+    _with_lock_retry(_write)
 
 
 # ── Queue getters ─────────────────────────────────────────────────────────────
@@ -239,28 +216,34 @@ def get_ready_queue(conn):
 
 def claim_for_supervisor_review(conn, scene_id, supervisor_id):
     """supervisor atomically claims a scene from the supervisor pool (5 → 6)"""
-    cur = conn.execute(
-        "UPDATE scenes SET status = 6, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 5",
-        (supervisor_id, scene_id)
-    )
-    conn.commit()
-    return cur.rowcount == 1
+    def _write():
+        cur = conn.execute(
+            "UPDATE scenes SET status = 6, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 5",
+            (supervisor_id, scene_id)
+        )
+        conn.commit()
+        return cur.rowcount == 1
+    return _with_lock_retry(_write)
 
 def release_supervisor_review(conn, scene_id):
     """return a supervisor-claimed scene to the supervisor pool (6 → 5)"""
-    conn.execute(
-        "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 6",
-        (scene_id,)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 6",
+            (scene_id,)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 def update_scene_flags(conn, scene_id, flags_str):
     """update the flags column on a scene"""
-    conn.execute(
-        "UPDATE scenes SET flags = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
-        (flags_str, scene_id)
-    )
-    conn.commit()
+    def _write():
+        conn.execute(
+            "UPDATE scenes SET flags = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (flags_str, scene_id)
+        )
+        conn.commit()
+    _with_lock_retry(_write)
 
 def get_supervisor_queue(conn):
     """scenes awaiting supervisor review (status 5, shared pool)"""
@@ -292,13 +275,118 @@ def get_issues_queue(conn):
 
 
 # ── Review functions ──────────────────────────────────────────────────────────
+#
+# Each of these bundles a scene-table write together with its audit-log entry
+# into a single commit, retried as one unit if the DB is locked -- so a lock
+# error can never leave a scene half-transitioned (e.g. reviewer stamped but
+# status/log not updated, or vice versa). Controller functions that used to
+# make several separate db.py calls for one logical action now make one call
+# here instead.
 
-def log_review(conn, scene_id, reviewer_id, stage, decision, comments):
-    conn.execute(
-        "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))",
-        (scene_id, reviewer_id, stage, decision, comments)
-    )
-    conn.commit()
+_REVIEW_INSERT_SQL = (
+    "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments, timestamp) "
+    "VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))"
+)
+
+
+def record_submission(conn, scene_id, new_status, claimed_by, analyst_id, stage, decision, comments):
+    """Transition a scene on analyst submission/resubmission and log it."""
+    def _write():
+        conn.execute(
+            "UPDATE scenes SET status = ?, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (new_status, claimed_by, scene_id)
+        )
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, analyst_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
+
+def record_peer_review(conn, scene_id, reviewer_id, new_status, stage, decision, comments):
+    """Set the peer reviewer, transition status, and log the decision."""
+    def _write():
+        conn.execute("UPDATE scenes SET peer_reviewer_id = ? WHERE id = ?", (reviewer_id, scene_id))
+        conn.execute(
+            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (new_status, scene_id)
+        )
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, reviewer_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
+
+def record_supervisor_review(conn, scene_id, supervisor_id, new_status, stage, decision, comments):
+    """Set the supervisor, transition status, and log the decision. Used for
+    both approve/kick-back and the 'mark issues' shortcut."""
+    def _write():
+        conn.execute("UPDATE scenes SET supervisor_id = ? WHERE id = ?", (supervisor_id, scene_id))
+        conn.execute(
+            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (new_status, scene_id)
+        )
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, supervisor_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
+
+def record_force_release(conn, scene_id, supervisor_id, stage, decision, comments):
+    """Release a stuck claim (supervisor claim at 6, or an analyst's claimed/
+    in-review scene at 1/3) back to the appropriate pool and log the admin
+    action. Caller is responsible for checking the scene has a releasable
+    claim before calling this."""
+    scene = get_scene_by_id(conn, scene_id)
+    if scene['status'] == 6:
+        release_sql = "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
+    elif scene['status'] == 1:
+        release_sql = """UPDATE scenes
+                          SET status = 0, owner_id = NULL, claimed_by = NULL,
+                              updated_at = datetime('now', 'localtime')
+                          WHERE id = ?"""
+    elif scene['status'] == 3:
+        release_sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
+    else:
+        return
+    def _write():
+        conn.execute(release_sql, (scene_id,))
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, supervisor_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
+
+def record_scene_edit(conn, scene_id, new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by,
+                       acting_supervisor_id, stage, decision, comments):
+    """Reassign a scene's status/owner/peer-reviewer/supervisor/claim (supervisor
+    admin edit) and log the change. Unlike the normal workflow transitions,
+    this intentionally bypasses the set-once rule for the three assignment
+    fields -- it exists for correcting mis-assigned scenes."""
+    def _write():
+        conn.execute("""
+            UPDATE scenes
+            SET status = ?, owner_id = ?, peer_reviewer_id = ?, supervisor_id = ?, claimed_by = ?,
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+        """, (new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by, scene_id))
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, acting_supervisor_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
+
+def record_scene_reset(conn, scene_id, acting_supervisor_id, stage, decision, comments):
+    """Wipe all ownership on a scene (supervisor admin reset) and log it."""
+    def _write():
+        conn.execute("""
+            UPDATE scenes
+            SET status = 0,
+                owner_id = NULL,
+                peer_reviewer_id = NULL,
+                supervisor_id = NULL,
+                claimed_by = NULL,
+                updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+        """, (scene_id,))
+        conn.execute(_REVIEW_INSERT_SQL, (scene_id, acting_supervisor_id, stage, decision, comments))
+        conn.commit()
+    _with_lock_retry(_write)
+
 
 def get_all_scenes(conn):
     """master list of every scene with all user fields resolved to usernames"""
@@ -533,6 +621,11 @@ def _run_migrations(conn):
 
 
 def get_db_connection():
+    # timeout=1.0 sets SQLite's own busy handler, so every statement already
+    # retries internally (at sub-second intervals) for up to 1s before raising
+    # "database is locked" -- kept short so a single attempt can't silently
+    # eat many seconds. _with_lock_retry then adds up to 25 further attempts
+    # at a ~0.1s cadence around every write in this module.
     conn = sqlite3.connect(DB_PATH, timeout=1.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE;")
