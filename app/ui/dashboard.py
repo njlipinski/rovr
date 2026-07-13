@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
-    QApplication,
+    QApplication, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
@@ -30,7 +30,7 @@ from app.db import (
     get_scene_thread, add_note, update_note, delete_note, get_scene_by_id,
     get_science_notes, add_science_note, update_science_note, delete_science_note,
     update_username, update_user_password, get_user_by_username,
-    update_scene_flags, get_user_stats, get_all_user_stats,
+    update_scene_flags, get_user_stats, get_all_user_stats, get_all_supervisor_stats,
 )
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
@@ -41,7 +41,6 @@ except ImportError:
 
 # Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
-
 
 
 def parse_scene_key(scene_key):
@@ -797,7 +796,7 @@ class StatsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         if user['role'] == Role.SUPERVISOR:
-            self._build_all_users(layout, conn)
+            self._build_tabs(layout, conn)
         else:
             self._build_own(layout, conn, user['id'])
 
@@ -834,65 +833,114 @@ class StatsDialog(QDialog):
         self.setMinimumWidth(380)
         layout.addWidget(tbl)
 
-    def _build_all_users(self, layout, conn):
-        all_stats = [
-            (u, s) for u, s in get_all_user_stats(conn)
-            if u['role'] != Role.SUPERVISOR and 'test' not in u['username'].lower()
-        ]
-        layout.addWidget(QLabel("<b>All User Statistics</b>"))
+    _ANALYST_METRICS = [
+        ("Submitted",   'submitted'),
+        ("Peer Rev'd",  'peer_reviewed'),
+        ("Approved",    'approved'),
+        ("Kicked Back", 'kicked_back'),
+    ]
 
-        headers = [
-            "Username",
-            "Submitted", "Sub Today",
-            "Peer Rev'd", "PR Today",
-            "Approved",   "Appr Today",
-            "Kicked Back","KB Today",
-        ]
-        tbl = QTableWidget(len(all_stats), len(headers))
+    _SUPERVISOR_METRICS = [
+        ("Approved",    'approved'),
+        ("Kicked Back", 'kicked_back'),
+    ]
+
+    @staticmethod
+    def _make_table(row_count, headers):
+        """Sortable, read-only table shell shared by every stats tab."""
+        tbl = QTableWidget(row_count, len(headers))
         tbl.setHorizontalHeaderLabels(headers)
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         tbl.horizontalHeader().setStretchLastSection(False)
+        return tbl
 
-        R = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    @staticmethod
+    def _num_item(val):
+        item = _NumericItem(str(val))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return item
 
-        def num(val):
-            item = _NumericItem(str(val))
-            item.setTextAlignment(R)
-            return item
+    def _build_tabs(self, layout, conn):
+        all_analyst_stats = [
+            (u, s) for u, s in get_all_user_stats(conn)
+            if u['role'] != Role.SUPERVISOR and 'test' not in u['username'].lower()
+        ]
+        all_supervisor_stats = get_all_supervisor_stats(conn)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'today', "Today's"), "Analyst Daily")
+        tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'week', "This Week's"), "Analyst Weekly")
+        tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'total', "All-Time"), "Analyst Total")
+        tabs.addTab(self._build_supervisor_tab(all_supervisor_stats), "All Supervisor Stats")
+        layout.addWidget(tabs)
+        self.setMinimumWidth(680)
+        self.resize(720, 480)
+
+        chart_btn = QPushButton("View Chart")
+        chart_btn.clicked.connect(lambda: StatsChartDialog(all_analyst_stats, self).exec())
+        layout.addWidget(chart_btn)
+
+    def _build_analyst_period_tab(self, all_stats, period, label_prefix):
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.addWidget(QLabel(f"<b>{label_prefix} Analyst Statistics</b>"))
+
+        headers = ["Username"] + [name for name, _ in self._ANALYST_METRICS]
+        tbl = self._make_table(len(all_stats), headers)
 
         for i, (user, stats) in enumerate(all_stats):
             tbl.setItem(i, 0, QTableWidgetItem(user['username']))
-            tbl.setItem(i, 1, num(stats['submitted_total']))
-            tbl.setItem(i, 2, num(stats['submitted_today']))
-            tbl.setItem(i, 3, num(stats['peer_reviewed_total']))
-            tbl.setItem(i, 4, num(stats['peer_reviewed_today']))
-            tbl.setItem(i, 5, num(stats['approved_total']))
-            tbl.setItem(i, 6, num(stats['approved_today']))
-            tbl.setItem(i, 7, num(stats['kicked_back_total']))
-            tbl.setItem(i, 8, num(stats['kicked_back_today']))
+            for col, (_, key) in enumerate(self._ANALYST_METRICS, start=1):
+                tbl.setItem(i, col, self._num_item(stats[f'{key}_{period}']))
 
         tbl.setSortingEnabled(True)
-
         tbl.resizeColumnsToContents()
         tbl.resizeRowsToContents()
-        self.setMinimumWidth(680)
-        layout.addWidget(tbl)
+        v.addWidget(tbl)
+        return container
 
-        chart_btn = QPushButton("View Chart")
-        chart_btn.clicked.connect(lambda: StatsChartDialog(all_stats, self).exec())
-        layout.addWidget(chart_btn)
+    def _build_supervisor_tab(self, all_stats):
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.addWidget(QLabel("<b>All Supervisor Statistics</b>"))
+
+        headers = ["Username"]
+        for name, _ in self._SUPERVISOR_METRICS:
+            headers += [f"{name} Today", f"{name} Week", f"{name} Total"]
+        tbl = self._make_table(len(all_stats), headers)
+
+        for i, (user, stats) in enumerate(all_stats):
+            tbl.setItem(i, 0, QTableWidgetItem(user['username']))
+            col = 1
+            for _, key in self._SUPERVISOR_METRICS:
+                tbl.setItem(i, col,     self._num_item(stats[f'{key}_today']))
+                tbl.setItem(i, col + 1, self._num_item(stats[f'{key}_week']))
+                tbl.setItem(i, col + 2, self._num_item(stats[f'{key}_total']))
+                col += 3
+
+        tbl.setSortingEnabled(True)
+        tbl.resizeColumnsToContents()
+        tbl.resizeRowsToContents()
+        v.addWidget(tbl)
+        return container
 
 
 class StatsChartDialog(QDialog):
-    """Bar chart of analyst activity stats with an All Time / Today toggle."""
+    """Bar chart of analyst activity stats with an All Time / Weekly / Today toggle."""
 
     _METRICS = [
-        ("Submitted",    'submitted_total',    'submitted_today'),
-        ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_today'),
-        ("Approved",     'approved_total',     'approved_today'),
-        ("Kicked Back",  'kicked_back_total',  'kicked_back_today'),
+        ("Submitted",    'submitted_total',    'submitted_week',    'submitted_today'),
+        ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_week','peer_reviewed_today'),
+        ("Approved",     'approved_total',     'approved_week',     'approved_today'),
+        ("Kicked Back",  'kicked_back_total',  'kicked_back_week',  'kicked_back_today'),
+    ]
+
+    _MODES = [
+        ('total', "All Time",  "All-Time Activity"),
+        ('week',  "Weekly",    "This Week's Activity"),
+        ('today', "Today",     "Today's Activity"),
     ]
 
     def __init__(self, all_stats, parent=None):
@@ -910,15 +958,13 @@ class StatsChartDialog(QDialog):
         self._canvas = FigureCanvasQTAgg(self._fig)
 
         toggle_row = QHBoxLayout()
-        self._btn_total = QPushButton("All Time")
-        self._btn_today = QPushButton("Today")
-        self._btn_total.setCheckable(True)
-        self._btn_today.setCheckable(True)
-        self._btn_total.setChecked(True)
-        self._btn_total.clicked.connect(lambda: self._switch(False))
-        self._btn_today.clicked.connect(lambda: self._switch(True))
-        toggle_row.addWidget(self._btn_total)
-        toggle_row.addWidget(self._btn_today)
+        self._buttons = {}
+        for mode, label, _ in self._MODES:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _checked, m=mode: self._switch(m))
+            toggle_row.addWidget(btn)
+            self._buttons[mode] = btn
         toggle_row.addStretch()
 
         layout = QVBoxLayout(self)
@@ -929,19 +975,23 @@ class StatsChartDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
-        self._today = False
+        self._mode = 'total'
+        self._buttons['total'].setChecked(True)
         self._draw()
 
-    def _switch(self, today):
-        self._today = today
-        self._btn_total.setChecked(not today)
-        self._btn_today.setChecked(today)
+    def _switch(self, mode):
+        self._mode = mode
+        for m, btn in self._buttons.items():
+            btn.setChecked(m == mode)
         self._draw()
 
     def _metrics_keyed(self):
         """Return [(display_label, stats_dict_key)] for the current toggle mode."""
-        i = 2 if self._today else 1
+        i = {'total': 1, 'week': 2, 'today': 3}[self._mode]
         return [(m[0], m[i]) for m in self._METRICS]
+
+    def _title(self):
+        return next(title for mode, _, title in self._MODES if mode == self._mode)
 
     def _draw(self):
         import numpy as np
@@ -965,7 +1015,7 @@ class StatsChartDialog(QDialog):
         ax.set_xticks(x)
         ax.set_xticklabels(usernames, rotation=20, ha='right')
         ax.set_ylabel("Count")
-        ax.set_title("Today's Activity" if self._today else "All-Time Activity")
+        ax.set_title(self._title())
         ax.legend(loc='upper right')
         ax.margins(y=0.15)
 
@@ -1241,14 +1291,18 @@ class Dashboard(QMainWindow):
     def _find_scene_file(self, scene, ext):
         """Return the path to the most recent file with the given extension (e.g.
         '.sel', '.fits') for this scene under working/, or None."""
-        rover  = scene['rover']
-        sol    = scene['sol']
-        seq_id = scene['seq_id']
-        pma    = scene['pma']
+        rover   = scene['rover']
+        sol     = scene['sol']
+        seq_id  = scene['seq_id']
+        seq_ver = scene['seq_ver']
+        pma     = scene['pma']
         if None in (rover, sol, seq_id, pma):
             return None
 
-        base_name = f"Sol{sol:04d}_{seq_id.lower()}_PMA{pma}"
+        # seq_ver is absent for all pre-SEQ_VER scenes and some current ones —
+        # fold it into the seq_id token only when present (renders as v5, v12, ...).
+        seq_token = f"{seq_id.lower()}v{seq_ver}" if seq_ver is not None else seq_id.lower()
+        base_name = f"Sol{sol:04d}_{seq_token}_PMA{pma}"
         sol_dir   = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
         if not os.path.isdir(sol_dir):
             return None

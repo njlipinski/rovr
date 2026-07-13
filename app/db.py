@@ -559,6 +559,10 @@ def get_supervisor_in_progress(conn, user_id):
 
 # ── Connection and initialization ─────────────────────────────────────────────
 
+# Monday of the current calendar week (Mon-Sun), used for "_week" stat counts.
+_WEEK_START_SQL = "DATE('now','localtime','weekday 0','-6 days')"
+
+
 def get_user_stats(conn, user_id):
     """Stat counts for one user derived from the reviews + scenes tables."""
     def count(sql):
@@ -567,6 +571,10 @@ def get_user_stats(conn, user_id):
         'submitted_total': count(
             "SELECT COUNT(DISTINCT scene_id) FROM reviews "
             "WHERE reviewer_id=? AND decision='submitted'"),
+        'submitted_week': count(
+            "SELECT COUNT(DISTINCT scene_id) FROM reviews "
+            "WHERE reviewer_id=? AND decision='submitted' "
+            f"AND DATE(timestamp)>={_WEEK_START_SQL}"),
         'submitted_today': count(
             "SELECT COUNT(DISTINCT scene_id) FROM reviews "
             "WHERE reviewer_id=? AND decision='submitted' "
@@ -574,6 +582,10 @@ def get_user_stats(conn, user_id):
         'peer_reviewed_total': count(
             "SELECT COUNT(*) FROM reviews "
             "WHERE reviewer_id=? AND stage='peer_review'"),
+        'peer_reviewed_week': count(
+            "SELECT COUNT(*) FROM reviews "
+            "WHERE reviewer_id=? AND stage='peer_review' "
+            f"AND DATE(timestamp)>={_WEEK_START_SQL}"),
         'peer_reviewed_today': count(
             "SELECT COUNT(*) FROM reviews "
             "WHERE reviewer_id=? AND stage='peer_review' "
@@ -581,19 +593,57 @@ def get_user_stats(conn, user_id):
         'approved_total': count(
             "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
             "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved'"),
+        'approved_week': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
+            f"AND DATE(r.timestamp)>={_WEEK_START_SQL}"),
         'approved_today': count(
             "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
             "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
             "AND DATE(r.timestamp)=DATE('now','localtime')"),
         'kicked_back_total': count(
-            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
             "WHERE s.owner_id=? AND r.decision='needs_revision'"),
+        'kicked_back_week': count(
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.owner_id=? AND r.decision='needs_revision' "
+            f"AND DATE(r.timestamp)>={_WEEK_START_SQL}"),
         'kicked_back_today': count(
-            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
             "WHERE s.owner_id=? AND r.decision='needs_revision' "
             "AND DATE(r.timestamp)=DATE('now','localtime')"),
     }
 
+
+def get_supervisor_stats(conn, user_id):
+    """Stat counts for one supervisor derived from the reviews + scenes tables."""
+    def count(sql):
+        return conn.execute(sql, (user_id,)).fetchone()[0]
+    return {
+        'approved_total': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.stage='supervisor_review' AND r.decision='approved'"),
+        'approved_week': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
+            f"AND DATE(r.timestamp)>={_WEEK_START_SQL}"),
+        'approved_today': count(
+            "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
+            "AND DATE(r.timestamp)=DATE('now','localtime')"),
+        'kicked_back_total': count(
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.decision='needs_revision'"),
+        'kicked_back_week': count(
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.decision='needs_revision' "
+            f"AND DATE(r.timestamp)>={_WEEK_START_SQL}"),
+        'kicked_back_today': count(
+            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+            "WHERE s.supervisor_id=? AND r.decision='needs_revision' "
+            "AND DATE(r.timestamp)=DATE('now','localtime')"),
+    }
+    
 
 def get_all_user_stats(conn):
     """Return [(user_row, stats_dict)] for all active users, sorted by username."""
@@ -601,6 +651,14 @@ def get_all_user_stats(conn):
         "SELECT id, username, role FROM users WHERE active=1 ORDER BY username"
     ).fetchall()
     return [(u, get_user_stats(conn, u['id'])) for u in users]
+
+
+def get_all_supervisor_stats(conn):
+    """Return [(user_row, stats_dict)] for all active supervisors, sorted by username."""
+    users = conn.execute(
+        "SELECT id, username, role FROM users WHERE active=1 AND role='supervisor' ORDER BY username"
+    ).fetchall()
+    return [(u, get_supervisor_stats(conn, u['id'])) for u in users]
 
 
 def _run_migrations(conn):

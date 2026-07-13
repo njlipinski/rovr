@@ -19,6 +19,10 @@ Migration utility: --restructure-folders
   rover/NNNN/<kind> layout (dropping the 'sol' prefix), for kind in
   iof, edr, practice, working. Safe to re-run — skips anything already
   migrated or missing.
+  
+Backup utility: --backup
+    Creates a backup of the database file and the 'working' directories for
+    both rovers (includes the fits and sel files),
 
 Usage:
     python setup/import_scenes.py --csv obs_table.csv
@@ -38,10 +42,13 @@ Usage:
 """
 
 import csv
+import os
 import re
 import shutil
+import sqlite3
 import sys
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,9 +57,10 @@ from app.db import get_db_connection, initialize_db
 from app.paths import FolderKind, sol_dir_name
 
 try:
-    from config import PANCAM_PATH
+    from config import PANCAM_PATH, DB_PATH
 except ImportError:
     PANCAM_PATH = None
+    DB_PATH = None
 
 # Current sol folder pattern (no 'sol' prefix) — used by the folder scanner
 # and build_folders, which both operate on the current rover/####/<kind> layout.
@@ -438,6 +446,65 @@ def restructure_folders(pancam_root, dry_run=False):
         print(f"{rover}: {moved} sol/<kind> folder(s) moved, {skipped} skipped (destination existed)")
 
 
+def backup_scenes(pancam_root, db_path):
+    """Back up the database and both rovers' 'working' directories under
+    into R:\\Rice\\Backup. 
+
+    The DB is snapshotted through SQLite's online backup API (safe against
+    concurrent writers on the shared drive) into a timestamped file, so
+    every run keeps its own dated copy rather than overwriting the last one.
+
+    Working-directory files (.sel/.fits) are mirrored into a single
+    persistent backup/working tree, preserving the rover/####/working
+    layout. Existing files there are never touched or re-copied -- .sel and
+    .fits files don't change once written, so only new files since the last
+    run are copied.
+    """
+    pancam_path = Path(pancam_root)
+    backup_root = pancam_path.parent / "Backup"
+    db_backup_dir = backup_root / "db"
+    db_backup_dir.mkdir(parents=True, exist_ok=True)
+
+    db_path = Path(db_path)
+    timestamp = datetime.now().strftime("%Y_%m_%d")
+    db_backup_path = db_backup_dir / f"{db_path.stem}_{timestamp}{db_path.suffix}"
+    src_conn = sqlite3.connect(db_path)
+    dst_conn = sqlite3.connect(db_backup_path)
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    print(f"Database backed up to {db_backup_path}")
+
+    copied = skipped = 0
+    for rover in ["MERA", "MERB"]:
+        rover_root = pancam_path / rover
+        if not rover_root.exists():
+            print(f"Skipping {rover}: {rover_root} does not exist.")
+            continue
+
+        sol_dirs = sorted(
+            d for d in rover_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None
+        )
+        for sol_dir in sol_dirs:
+            working_dir = sol_dir / FolderKind.WORKING
+            if not working_dir.exists():
+                continue
+            for item in working_dir.rglob("*"):
+                if item.is_dir():
+                    continue
+                dest = backup_root / item.relative_to(pancam_path)
+                if dest.exists():
+                    skipped += 1
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest)
+                copied += 1
+
+    print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -483,6 +550,11 @@ def main():
         action="store_true",
         help="Wipe all scenes and reviews. Users are not affected.",
     )
+    parser.add_argument(
+        "--backup",
+        action="store_true",
+        help="Create a backup of the database file and the 'working' directories for both rovers (includes fits and sel files)."
+    )
     args = parser.parse_args()
 
     # --build-folders and --restructure-folders don't need a DB connection
@@ -505,6 +577,17 @@ def main():
             sys.exit(1)
         restructure_folders(args.path, dry_run=args.dry_run)
         return
+    
+    if args.backup:
+        if not args.path:
+            print("Error: --backup requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not DB_PATH:
+            print("Error: --backup requires DB_PATH in config.py.")
+            sys.exit(1)
+        backup_scenes(args.path, DB_PATH)
+        return
+
 
     initialize_db()
     conn = get_db_connection()

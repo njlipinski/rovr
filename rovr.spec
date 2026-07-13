@@ -11,13 +11,15 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
+from app.resources import ICON_PATH
+
 block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('matplotlib') + [('app/assets/rover_illustration.png', 'app/assets')],
+    datas=collect_data_files('matplotlib') + [(ICON_PATH, 'app/assets')],
     hiddenimports=[
         'PyQt6.sip',
         'bcrypt._bcrypt',
@@ -69,13 +71,13 @@ exe = EXE(
     entitlements_file=None,
     # PyInstaller converts the PNG to .ico/.icns via Pillow at build time
     # (Pillow is pulled in transitively by matplotlib).
-    icon='app/assets/rover_illustration.png',
+    icon=ICON_PATH,
 )
 
 # macOS only — produces dist/rovr.app; ignored on Windows
 app = BUNDLE(
     exe,
     name='rovr.app',
-    icon='app/assets/rover_illustration.png',
+    icon=ICON_PATH,
     bundle_identifier='edu.wwu.marsresearchgroup.rovr',
 )
