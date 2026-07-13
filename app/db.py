@@ -212,7 +212,12 @@ def get_analyst_queue(conn, user_id):
 
 def get_ready_queue(conn):
     """scenes available for peer review (status 2, shared pool)"""
-    return conn.execute("SELECT * FROM scenes WHERE status = 2").fetchall()
+    return conn.execute("""
+        SELECT scenes.*, users.username AS owner_username
+        FROM scenes
+        LEFT JOIN users ON scenes.owner_id = users.id
+        WHERE scenes.status = 2
+    """).fetchall()
 
 def claim_for_supervisor_review(conn, scene_id, supervisor_id):
     """supervisor atomically claims a scene from the supervisor pool (5 → 6)"""

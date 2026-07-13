@@ -75,7 +75,7 @@ class AnalystDashboard(Dashboard):
         in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
 
         # Ready for Peer Review
-        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name"])
+        self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name", "Owner"])
         apply_flag_delegate(self.review_queue_table)
         self.review_queue_tray = make_button_tray()
         self.review_queue_table.itemSelectionChanged.connect(self._update_review_tray)
@@ -173,6 +173,7 @@ class AnalystDashboard(Dashboard):
             self.review_queue_table.setItem(i, 4, QTableWidgetItem(obs))
             self.review_queue_table.setItem(i, 5, make_flag_item(scene['flags']))
             self.review_queue_table.setItem(i, 6, QTableWidgetItem(scene['name']))
+            self.review_queue_table.setItem(i, 7, QTableWidgetItem(scene['owner_username'] or '—'))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
