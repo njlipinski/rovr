@@ -1299,24 +1299,45 @@ class Dashboard(QMainWindow):
         if None in (rover, sol, seq_id, pma):
             return None
 
-        # seq_ver is absent for all pre-SEQ_VER scenes and some current ones —
-        # fold it into the seq_id token only when present (renders as v5, v12, ...).
-        seq_token = f"{seq_id.lower()}v{seq_ver}" if seq_ver is not None else seq_id.lower()
-        base_name = f"Sol{sol:04d}_{seq_token}_PMA{pma}"
-        sol_dir   = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
+        # Whether SEQ_VER is folded into the folder/file name depends on which
+        # ROI Studio convention was in effect at the time of that particular save,
+        # not on whether the DB happens to have a seq_ver value for this scene —
+        # a scene can pick up a seq_ver later while its on-disk folders (saved
+        # under an older convention) never had it embedded. So when seq_ver is
+        # present, accept both the bare and seq_ver-folded forms as identifiers
+        # for the same scene, and let "latest mtime wins" pick the right one.
+        seq_id_lower = seq_id.lower()
+        base_names = {f"Sol{sol:04d}_{seq_id_lower}_PMA{pma}"}
+        if seq_ver is not None:
+            base_names.add(f"Sol{sol:04d}_{seq_id_lower}v{seq_ver}_PMA{pma}")
+        sol_dir = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
         if not os.path.isdir(sol_dir):
             return None
+
+        # ROI Studio folder names have gone through three conventions, all of which
+        # may additionally carry a trailing "_v#" revision tag on the FOLDER only:
+        #   base_name                          (original)
+        #   base_name_v#                       (original, revised)
+        #   base_name_NAME                     (current "stable" — NAME is free-form)
+        #   base_name_NAME_v#                  (current, revised)
+        # The file inside a folder is always that folder's own name with the
+        # trailing "_v#" stripped — never reconstructed independently — so we
+        # derive the expected file name per-folder instead of assuming base_name.
+        _version_re = re.compile(r'^(.+)_v(\d+)$')
 
         candidates = []
         for entry in os.scandir(sol_dir):
             if not entry.is_dir():
                 continue
             n = entry.name
-            is_base      = n == base_name
-            is_versioned = n.startswith(base_name + '_v') and n[len(base_name) + 2:].isdigit()
-            if not (is_base or is_versioned):
+            m = _version_re.match(n)
+            versionless = m.group(1) if m else n
+            if not any(
+                versionless == base_name or versionless.startswith(base_name + '_')
+                for base_name in base_names
+            ):
                 continue
-            file_path = os.path.join(entry.path, base_name + ext)
+            file_path = os.path.join(entry.path, versionless + ext)
             if os.path.isfile(file_path):
                 candidates.append(file_path)
 
