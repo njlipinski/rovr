@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QPushButton, QSplitter, QTabWidget, QMessageBox, QTa
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
-    Dashboard, KickBackDialog,
+    Dashboard,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -385,38 +385,43 @@ class AnalystDashboard(Dashboard):
         if ok:
             QMessageBox.information(self, "Submitted", "Scene submitted.")
 
-    def handle_approve(self):
+    def _do_approve(self, scene_id, comment=None):
         """Peer reviewer approves a status-3 scene → status 5."""
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
         ok = self._run_db_action(
-            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None),
+            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
         )
         self.refresh_task_list()
-        if ok:
+        return ok
+
+    def _do_kick_back(self, scene_id, comment=None):
+        """Peer reviewer kicks back a status-3 scene → status 4 with an optional comment."""
+        ok = self._run_db_action(
+            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comment),
+            "Kick Back Failed"
+        )
+        self.refresh_task_list()
+        return ok
+
+    def handle_approve(self):
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        if self._do_approve(scene_id):
             QMessageBox.information(self, "Approved", "Scene approved and sent to supervisor.")
 
     def handle_kick_back(self):
-        """Peer reviewer kicks back a status-3 scene → status 4 with optional notes."""
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
         row = self.my_queue_table.currentRow()
         cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
-        dialog = KickBackDialog(self.conn, scene_id, scene_name, self)
-        if dialog.exec() != KickBackDialog.DialogCode.Accepted:
-            return
-        comments = dialog.get_comments()
-        ok = self._run_db_action(
-            lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comments),
-            "Kick Back Failed"
+        self._show_notes(
+            scene_id, scene_name,
+            on_approve=lambda comment: self._do_approve(scene_id, comment),
+            on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
         )
-        self.refresh_task_list()
-        if ok:
-            QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
 
     def handle_see_notes(self):
         scene_id = self._my_queue_scene_id()
@@ -425,7 +430,14 @@ class AnalystDashboard(Dashboard):
         row = self.my_queue_table.currentRow()
         cells = [self.my_queue_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
-        self._show_notes(scene_id, scene_name)
+        if self.selected_status(self.my_queue_table) == SceneStatus.IN_REVIEW:
+            self._show_notes(
+                scene_id, scene_name,
+                on_approve=lambda comment: self._do_approve(scene_id, comment),
+                on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
+            )
+        else:
+            self._show_notes(scene_id, scene_name)
 
     def handle_see_science_notes(self):
         scene_id = self._my_queue_scene_id()

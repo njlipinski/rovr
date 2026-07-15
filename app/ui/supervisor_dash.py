@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, KickBackDialog, WordSelectTextEdit,
+    Dashboard, WordSelectTextEdit,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -381,16 +381,29 @@ class SupervisorDashboard(Dashboard):
             QMessageBox.warning(self, "No Selection", "Select a scene first.")
         return scene_id
 
+    def _do_approve(self, scene_id, comment=None):
+        ok = self._run_db_action(
+            lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
+            "Approve Failed"
+        )
+        self.refresh_task_list()
+        return ok
+
+    def _do_kick_back(self, scene_id, comment=None):
+        ok = self._run_db_action(
+            lambda: supervisor_review_scene(
+                self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comment
+            ),
+            "Kick Back Failed"
+        )
+        self.refresh_task_list()
+        return ok
+
     def handle_approve(self):
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
-        ok = self._run_db_action(
-            lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None),
-            "Approve Failed"
-        )
-        self.refresh_task_list()
-        if ok:
+        if self._do_approve(scene_id):
             QMessageBox.information(self, "Approved", "Scene approved.")
 
     def handle_kick_back(self):
@@ -398,19 +411,11 @@ class SupervisorDashboard(Dashboard):
         if scene_id is None:
             return
         scene_name = self._scene_name_from(self.my_queue_table)
-        dialog = KickBackDialog(self.conn, scene_id, scene_name, self)
-        if dialog.exec() != KickBackDialog.DialogCode.Accepted:
-            return
-        comments = dialog.get_comments()
-        ok = self._run_db_action(
-            lambda: supervisor_review_scene(
-                self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comments
-            ),
-            "Kick Back Failed"
+        self._show_notes(
+            scene_id, scene_name,
+            on_approve=lambda comment: self._do_approve(scene_id, comment),
+            on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
         )
-        self.refresh_task_list()
-        if ok:
-            QMessageBox.information(self, "Kicked Back", "Scene returned to analyst with notes.")
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()
@@ -455,7 +460,11 @@ class SupervisorDashboard(Dashboard):
     def handle_my_queue_see_notes(self):
         scene_id = self.selected_id(self.my_queue_table)
         if scene_id is not None:
-            self._show_notes(scene_id, self._scene_name_from(self.my_queue_table))
+            self._show_notes(
+                scene_id, self._scene_name_from(self.my_queue_table),
+                on_approve=lambda comment: self._do_approve(scene_id, comment),
+                on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
+            )
 
     def handle_my_queue_see_science_notes(self):
         scene_id = self.selected_id(self.my_queue_table)

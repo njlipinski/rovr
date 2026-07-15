@@ -42,6 +42,11 @@ except ImportError:
 # Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 
+# Strips a trailing "_v#" ROI Studio folder revision tag, e.g.
+# 'Sol0055_p2583_PMA656_v4' -> 'Sol0055_p2583_PMA656'. Case-insensitive in case
+# a folder ever gets manually renamed with a capital "_V#".
+_REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
+
 
 def parse_scene_key(scene_key):
     """Return (rover, sol, seq_id, obs) from a scene_key, or ('','',scene_key,'0') if unparseable."""
@@ -318,40 +323,6 @@ class FlagDialog(QDialog):
         return self._note.toPlainText().strip()
 
 
-class KickBackDialog(QDialog):
-    """Shows scene history and optionally collects a kick-back note. Note is not required."""
-    def __init__(self, conn, scene_id, scene_name, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Kick Back — {scene_name}")
-        self.setMinimumSize(520, 480)
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("Scene history:"))
-        self.display = WordSelectTextEdit()
-        self.display.setReadOnly(True)
-        layout.addWidget(self.display)
-
-        layout.addWidget(QLabel("Add a note (optional):"))
-        self.input = WordSelectTextEdit()
-        self.input.setFixedHeight(80)
-        self.input.setPlaceholderText("Describe what needs to be revised...")
-        layout.addWidget(self.input)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        thread = get_scene_thread(conn, scene_id)
-        self.display.setPlainText(_format_thread(thread))
-
-    def get_comments(self):
-        text = self.input.toPlainText().strip()
-        return text if text else None
-
-
 _DECISION_LABEL = {
     'request_revision': 'Kick Back',
     'needs_revision':   'Kicked Back',
@@ -373,13 +344,6 @@ def _format_thread_row(row):
     header = f"[{row['timestamp']}]  {row['author_name']}  ({tag})"
     content = row['content']
     return f"{header}\n{content}" if content else header
-
-
-def _format_thread(thread):
-    """Format a scene thread (rows from get_scene_thread) into a plain-text string."""
-    if not thread:
-        return "No history yet."
-    return "\n\n---\n\n".join(_format_thread_row(row) for row in thread)
 
 
 def _format_science_note_row(row):
@@ -411,7 +375,11 @@ class NotesDialog(QDialog):
                  title="Notes", get_thread=get_scene_thread,
                  format_row=_format_thread_row, add_note_fn=add_note,
                  update_note_fn=update_note, delete_note_fn=delete_note,
-                 is_supervisor=False):
+                 is_supervisor=False, on_approve=None, on_kick_back=None):
+        """on_approve/on_kick_back, if given, are callables (comment: str | None) -> bool
+        (True on success). When set, the dialog shows an Approve/Kick Back button that
+        sends the current note-box text as the review comment and closes the dialog on
+        success, so a reviewer can leave a note and act on it without a second dialog."""
         super().__init__(parent)
         self.conn = conn
         self.scene_id = scene_id
@@ -422,6 +390,8 @@ class NotesDialog(QDialog):
         self._update_note_fn = update_note_fn
         self._delete_note_fn = delete_note_fn
         self._is_supervisor = is_supervisor
+        self._on_approve = on_approve
+        self._on_kick_back = on_kick_back
         self.setWindowTitle(f"{title} — {scene_name}")
         self.setMinimumSize(520, 440)
         layout = QVBoxLayout(self)
@@ -460,6 +430,14 @@ class NotesDialog(QDialog):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         btn_layout.addStretch()
+        if self._on_kick_back is not None:
+            kick_back_btn = QPushButton("Kick Back")
+            kick_back_btn.clicked.connect(self._on_kick_back_clicked)
+            btn_layout.addWidget(kick_back_btn)
+        if self._on_approve is not None:
+            approve_btn = QPushButton("Approve")
+            approve_btn.clicked.connect(self._on_approve_clicked)
+            btn_layout.addWidget(approve_btn)
         btn_layout.addWidget(add_btn)
         btn_layout.addWidget(close_btn)
         layout.addWidget(btn_row)
@@ -548,6 +526,16 @@ class NotesDialog(QDialog):
             return
         self.input.clear()
         self._refresh()
+
+    def _on_kick_back_clicked(self):
+        comment = self.input.toPlainText().strip() or None
+        if self._on_kick_back(comment):
+            self.accept()
+
+    def _on_approve_clicked(self):
+        comment = self.input.toPlainText().strip() or None
+        if self._on_approve(comment):
+            self.accept()
 
 
 class ChangeUsernameDialog(QDialog):
@@ -1299,17 +1287,6 @@ class Dashboard(QMainWindow):
         if None in (rover, sol, seq_id, pma):
             return None
 
-        # Whether SEQ_VER is folded into the folder/file name depends on which
-        # ROI Studio convention was in effect at the time of that particular save,
-        # not on whether the DB happens to have a seq_ver value for this scene —
-        # a scene can pick up a seq_ver later while its on-disk folders (saved
-        # under an older convention) never had it embedded. So when seq_ver is
-        # present, accept both the bare and seq_ver-folded forms as identifiers
-        # for the same scene, and let "latest mtime wins" pick the right one.
-        seq_id_lower = seq_id.lower()
-        base_names = {f"Sol{sol:04d}_{seq_id_lower}_PMA{pma}"}
-        if seq_ver is not None:
-            base_names.add(f"Sol{sol:04d}_{seq_id_lower}v{seq_ver}_PMA{pma}")
         sol_dir = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
         if not os.path.isdir(sol_dir):
             return None
@@ -1323,23 +1300,44 @@ class Dashboard(QMainWindow):
         # The file inside a folder is always that folder's own name with the
         # trailing "_v#" stripped — never reconstructed independently — so we
         # derive the expected file name per-folder instead of assuming base_name.
-        _version_re = re.compile(r'^(.+)_v(\d+)$')
+        def scan(is_match):
+            candidates = []
+            for entry in os.scandir(sol_dir):
+                if not entry.is_dir():
+                    continue
+                m = _REVISION_TAG_RE.match(entry.name)
+                versionless = m.group(1) if m else entry.name
+                if not is_match(versionless):
+                    continue
+                file_path = os.path.join(entry.path, versionless + ext)
+                if os.path.isfile(file_path):
+                    candidates.append(file_path)
+            return candidates
 
-        candidates = []
-        for entry in os.scandir(sol_dir):
-            if not entry.is_dir():
-                continue
-            n = entry.name
-            m = _version_re.match(n)
-            versionless = m.group(1) if m else n
-            if not any(
-                versionless == base_name or versionless.startswith(base_name + '_')
-                for base_name in base_names
-            ):
-                continue
-            file_path = os.path.join(entry.path, versionless + ext)
-            if os.path.isfile(file_path):
-                candidates.append(file_path)
+        # Whether SEQ_VER is folded into the name depends on which ROI Studio
+        # convention was in effect at the time of that particular save, not on
+        # whether the DB happens to have a seq_ver value for this scene — a
+        # scene can pick up a seq_ver later while its on-disk folders (saved
+        # under an older convention) never had it embedded. Try the strict
+        # match (bare, plus the DB's seq_ver if set) first: it covers the
+        # common case and keeps a useful signal (no match found) when DB and
+        # disk genuinely disagree about which scene a folder belongs to. Only
+        # fall back to a seq_ver-agnostic wildcard if the strict match finds
+        # nothing.
+        seq_id_lower = seq_id.lower()
+        strict_names = {f"Sol{sol:04d}_{seq_id_lower}_PMA{pma}"}
+        if seq_ver is not None:
+            strict_names.add(f"Sol{sol:04d}_{seq_id_lower}v{seq_ver}_PMA{pma}")
+
+        candidates = scan(lambda v: v in strict_names or any(
+            v.startswith(b + '_') for b in strict_names
+        ))
+
+        if not candidates:
+            wildcard_re = re.compile(
+                rf'^Sol{sol:04d}_{re.escape(seq_id_lower)}(?:v\d+)?_PMA{pma}(?:_.*)?$'
+            )
+            candidates = scan(lambda v: bool(wildcard_re.match(v)))
 
         if not candidates:
             return None
@@ -1353,10 +1351,11 @@ class Dashboard(QMainWindow):
         """Return the path to the most recent .fits file for this scene under working/, or None."""
         return self._find_scene_file(scene, '.fits')
 
-    def _show_notes(self, scene_id, scene_name):
+    def _show_notes(self, scene_id, scene_name, on_approve=None, on_kick_back=None):
         NotesDialog(
             self.conn, scene_id, scene_name, self.user['id'], self,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
+            on_approve=on_approve, on_kick_back=on_kick_back,
         ).exec()
 
     def _show_science_notes(self, scene_id, scene_name):
