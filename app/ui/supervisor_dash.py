@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, WordSelectTextEdit,
+    Dashboard, WordSelectTextEdit, SizePersistentDialog,
     make_scene_table, make_button_tray, make_section, clear_tray,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -41,13 +41,16 @@ def _make_user_combo(conn, roles, current_id):
     return combo
 
 
-class EditSceneDialog(QDialog):
+class EditSceneDialog(SizePersistentDialog):
     """Supervisor admin dialog: edit a scene's status and directly reassign
     its owner, peer reviewer, supervisor, and claimed-by fields."""
+    _size_key = 'edit_scene'
+
     def __init__(self, conn, scene, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Scene")
         self.setMinimumWidth(360)
+        self._restore_size()
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("Status:"))

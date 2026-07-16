@@ -20,6 +20,7 @@ from app.local_settings import (
     get_column_widths, set_column_widths,
     get_dark_mode, set_dark_mode,
     get_ui_scale, set_ui_scale,
+    get_dialog_size, set_dialog_size,
 )
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme
 
@@ -280,12 +281,32 @@ def make_flag_item(flags_str):
     return item
 
 
-class FlagDialog(QDialog):
+class SizePersistentDialog(QDialog):
+    """QDialog subclass that remembers its size (in local settings) across app
+    restarts, keyed by _size_key. Subclasses must set self._size_key and call
+    self._restore_size() once their minimum size is set in __init__."""
+    _size_key = None
+
+    def _restore_size(self):
+        saved = get_dialog_size(self._size_key)
+        if saved:
+            self.resize(*saved)
+
+    def done(self, result):
+        if self._size_key:
+            set_dialog_size(self._size_key, self.width(), self.height())
+        super().done(result)
+
+
+class FlagDialog(SizePersistentDialog):
     """Check/uncheck scene flags and optionally add a note. Always saves a note on OK."""
+    _size_key = 'flags'
+
     def __init__(self, conn, scene_id, scene_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Flags — {scene_name}")
         self.setMinimumWidth(360)
+        self._restore_size()
         layout = QVBoxLayout(self)
 
         scene = get_scene_by_id(conn, scene_id)
@@ -359,7 +380,7 @@ def _format_science_notes_for_roi_studio(thread):
     return "\n\n---\n\n".join(_format_science_note_row(row) for row in thread)
 
 
-class NotesDialog(QDialog):
+class NotesDialog(SizePersistentDialog):
     """Read-write dialog showing a note thread for a scene, allowing new notes,
     and letting the author (or a supervisor) edit/delete past notes.
 
@@ -371,15 +392,21 @@ class NotesDialog(QDialog):
     Review/decision entries are never editable — reviews are an append-only
     audit log — so edit/delete are only enabled for rows where type == 'note'.
     """
+    _size_key = 'notes'
+
     def __init__(self, conn, scene_id, scene_name, author_id, parent=None,
-                 title="Notes", get_thread=get_scene_thread,
-                 format_row=_format_thread_row, add_note_fn=add_note,
-                 update_note_fn=update_note, delete_note_fn=delete_note,
-                 is_supervisor=False, on_approve=None, on_kick_back=None):
+                title="Notes", get_thread=get_scene_thread,
+                format_row=_format_thread_row, add_note_fn=add_note,
+                update_note_fn=update_note, delete_note_fn=delete_note,
+                is_supervisor=False, on_approve=None, on_kick_back=None,
+                on_open_roi=None):
         """on_approve/on_kick_back, if given, are callables (comment: str | None) -> bool
         (True on success). When set, the dialog shows an Approve/Kick Back button that
         sends the current note-box text as the review comment and closes the dialog on
-        success, so a reviewer can leave a note and act on it without a second dialog."""
+        success, so a reviewer can leave a note and act on it without a second dialog.
+
+        on_open_roi, if given, is a callable () -> None that launches ROI Studio for
+        this scene, so a reviewer can jump to ROI Studio without closing the note thread."""
         super().__init__(parent)
         self.conn = conn
         self.scene_id = scene_id
@@ -392,8 +419,10 @@ class NotesDialog(QDialog):
         self._is_supervisor = is_supervisor
         self._on_approve = on_approve
         self._on_kick_back = on_kick_back
+        self._on_open_roi = on_open_roi
         self.setWindowTitle(f"{title} — {scene_name}")
         self.setMinimumSize(520, 440)
+        self._restore_size()
         layout = QVBoxLayout(self)
 
         self.list = QListWidget()
@@ -425,6 +454,10 @@ class NotesDialog(QDialog):
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
+        if self._on_open_roi is not None:
+            open_roi_btn = QPushButton("Open in ROI Studio")
+            open_roi_btn.clicked.connect(self._on_open_roi)
+            btn_layout.addWidget(open_roi_btn)
         add_btn = QPushButton("Add Note")
         add_btn.clicked.connect(self._on_add)
         close_btn = QPushButton("Close")
@@ -538,14 +571,17 @@ class NotesDialog(QDialog):
             self.accept()
 
 
-class ChangeUsernameDialog(QDialog):
+class ChangeUsernameDialog(SizePersistentDialog):
     """Let the logged-in user pick a new username."""
+    _size_key = 'change_username'
+
     def __init__(self, conn, user, parent=None):
         super().__init__(parent)
         self._conn = conn
         self._user = user
         self.setWindowTitle("Change Username")
         self.setMinimumWidth(340)
+        self._restore_size()
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Current username:  {user['username']}"))
         layout.addWidget(QLabel("New username:"))
@@ -586,14 +622,17 @@ class ChangeUsernameDialog(QDialog):
         return self._field.text().strip()
 
 
-class ChangePasswordDialog(QDialog):
+class ChangePasswordDialog(SizePersistentDialog):
     """Let the logged-in user set a new password after confirming their current one."""
+    _size_key = 'change_password'
+
     def __init__(self, conn, user, parent=None):
         super().__init__(parent)
         self._conn = conn
         self._user = user
         self.setWindowTitle("Change Password")
         self.setMinimumWidth(340)
+        self._restore_size()
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("Current password:"))
@@ -643,9 +682,10 @@ class ChangePasswordDialog(QDialog):
         self.accept()
 
 
-class FilterDialog(QDialog):
+class FilterDialog(SizePersistentDialog):
     """Filter scenes by rover, sol range, and sequence ID range across all tables."""
 
+    _size_key = 'filters'
     _DEFAULTS = {
         'rovers':    {'MERA', 'MERB'},
         'sol_min':   None,
@@ -658,6 +698,7 @@ class FilterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Filters")
         self.setMinimumWidth(320)
+        self._restore_size()
         self._result = dict(filters)
         layout = QVBoxLayout(self)
 
@@ -759,17 +800,18 @@ class FilterDialog(QDialog):
 
 
 class _NumericItem(QTableWidgetItem):
-    """QTableWidgetItem that sorts by integer value instead of string."""
+    """QTableWidgetItem that sorts by numeric value instead of string."""
     def __lt__(self, other):
         try:
-            return int(self.text()) < int(other.text())
+            return float(self.text()) < float(other.text())
         except ValueError:
             return super().__lt__(other)
 
 
-class StatsDialog(QDialog):
+class StatsDialog(SizePersistentDialog):
     """Show productivity stats. Analysts see their own; supervisors see all users."""
 
+    _size_key = 'stats'
     _ROWS = [
         ("Scenes submitted",       'submitted_total',    'submitted_today'),
         ("Peer reviews completed", 'peer_reviewed_total','peer_reviewed_today'),
@@ -791,6 +833,10 @@ class StatsDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+        # After the tab/own builders set their own default size, apply any
+        # saved size on top so it isn't clobbered by those hardcoded defaults.
+        self._restore_size()
 
     def _build_own(self, layout, conn, user_id):
         stats = get_user_stats(conn, user_id)
@@ -822,10 +868,11 @@ class StatsDialog(QDialog):
         layout.addWidget(tbl)
 
     _ANALYST_METRICS = [
-        ("Submitted",   'submitted'),
-        ("Peer Rev'd",  'peer_reviewed'),
-        ("Approved",    'approved'),
-        ("Kicked Back", 'kicked_back'),
+        ("Submitted",           'submitted'),
+        ("Peer Rev'd",          'peer_reviewed'),
+        ("Approved",            'approved'),
+        ("Kicked Back",         'kicked_back'),
+        ("Avg Kickbacks/Scene", 'avg_kickbacks_per_scene'),
     ]
 
     _SUPERVISOR_METRICS = [
@@ -846,7 +893,8 @@ class StatsDialog(QDialog):
 
     @staticmethod
     def _num_item(val):
-        item = _NumericItem(str(val))
+        text = f"{val:.2f}" if isinstance(val, float) else str(val)
+        item = _NumericItem(text)
         item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return item
 
@@ -915,9 +963,10 @@ class StatsDialog(QDialog):
         return container
 
 
-class StatsChartDialog(QDialog):
+class StatsChartDialog(SizePersistentDialog):
     """Bar chart of analyst activity stats with an All Time / Weekly / Today toggle."""
 
+    _size_key = 'stats_chart'
     _METRICS = [
         ("Submitted",    'submitted_total',    'submitted_week',    'submitted_today'),
         ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_week','peer_reviewed_today'),
@@ -936,6 +985,7 @@ class StatsChartDialog(QDialog):
         self.setWindowTitle("Analyst Activity Chart")
         self.setSizeGripEnabled(True)
         self.resize(820, 480)
+        self._restore_size()
         self._all_stats = all_stats
 
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -1356,6 +1406,7 @@ class Dashboard(QMainWindow):
             self.conn, scene_id, scene_name, self.user['id'], self,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
             on_approve=on_approve, on_kick_back=on_kick_back,
+            on_open_roi=lambda: self.handle_open_roi(scene_id),
         ).exec()
 
     def _show_science_notes(self, scene_id, scene_name):
@@ -1365,6 +1416,7 @@ class Dashboard(QMainWindow):
             format_row=_format_science_note_row, add_note_fn=add_science_note,
             update_note_fn=update_science_note, delete_note_fn=delete_science_note,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
+            on_open_roi=lambda: self.handle_open_roi(scene_id),
         ).exec()
 
     def handle_flag_scene(self, scene_id, scene_name=""):

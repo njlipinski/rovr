@@ -62,6 +62,16 @@ def set_ui_scale(scale):
     _save(data)
 
 
+def get_dialog_size(key):
+    return _load().get('dialog_sizes', {}).get(key)
+
+
+def set_dialog_size(key, width, height):
+    data = _load()
+    data.setdefault('dialog_sizes', {})[key] = [width, height]
+    _save(data)
+
+
 def get_all_scene_viewed_times():
     """Return {scene_id_str: 'YYYY-MM-DD HH:MM:SS'} of last-viewed timestamps."""
     return _load().get('scene_viewed', {})

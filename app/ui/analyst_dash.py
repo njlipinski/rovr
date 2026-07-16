@@ -231,10 +231,10 @@ class AnalystDashboard(Dashboard):
         layout = self.in_progress_tray.layout()
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_in_progress_open_roi),
-                             ("Open in Notebook",   self.handle_in_progress_open_notebook),
-                             ("Open Notes",         self.handle_in_progress_notes),
-                             ("Science Notes",      self.handle_in_progress_science_notes),
-                             ("Flag Scene",         self.handle_flag_from_in_progress)]:
+                            ("Open in Notebook",   self.handle_in_progress_open_notebook),
+                            ("Open Notes",         self.handle_in_progress_notes),
+                            ("Science Notes",      self.handle_in_progress_science_notes),
+                            ("Flag Scene",         self.handle_flag_from_in_progress)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
@@ -246,7 +246,7 @@ class AnalystDashboard(Dashboard):
         layout = self.review_queue_tray.layout()
         assert layout is not None
         for label, slot in [("Claim for Review", self.handle_claim_for_review),
-                             ("Flag Scene",       self.handle_flag_from_review)]:
+                            ("Flag Scene",       self.handle_flag_from_review)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
@@ -258,7 +258,7 @@ class AnalystDashboard(Dashboard):
         layout = self.scene_pool_tray.layout()
         assert layout is not None
         for label, slot in [("Claim Scene", self.handle_claim_from_pool),
-                             ("Flag Scene",  self.handle_flag_from_pool)]:
+                            ("Flag Scene",  self.handle_flag_from_pool)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
@@ -270,9 +270,9 @@ class AnalystDashboard(Dashboard):
         layout = self.completed_tray.layout()
         assert layout is not None
         for label, slot in [("Open in ROI Studio", self.handle_completed_open_roi),
-                             ("Open in Notebook",   self.handle_completed_open_notebook),
-                             ("See Notes",          self.handle_completed_notes),
-                             ("Science Notes",      self.handle_completed_science_notes)]:
+                            ("Open in Notebook",   self.handle_completed_open_notebook),
+                            ("See Notes",          self.handle_completed_notes),
+                            ("Science Notes",      self.handle_completed_science_notes)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)

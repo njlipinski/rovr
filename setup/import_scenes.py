@@ -2,24 +2,40 @@
 """Import Pancam scenes into the ROVR database.
 
 Primary method: CSV observation table (--csv path/to/obs_table.csv)
-  Groups rows by (ROVER, SOL, SEQ_ID, obs_ix) to form unique scenes.
-  All 33 CSV columns are stored in the DB; re-running is incremental (skips
-  existing scene_keys).
+    Groups rows by (ROVER, SOL, SEQ_ID, obs_ix) to form unique scenes.
+    All 33 CSV columns are stored in the DB; re-running is incremental (skips
+    existing scene_keys).
 
 Fallback method: folder scan (default, no flag needed)
-  Walks MERA/####/iof and MERB/####/iof directories looking for
-  Pancam IOF .IMG files. obs_ix defaults to 0 (single-pointing assumption).
+    Walks MERA/####/iof and MERB/####/iof directories looking for
+    Pancam IOF .IMG files. obs_ix defaults to 0 (single-pointing assumption).
 
 Additional utility: --build-folders
-  Ensures a named subfolder (default: working) exists inside every existing
-  rover/#### directory.
+    Ensures a named subfolder (default: working) exists inside every existing
+    rover/#### directory.
 
 Migration utility: --restructure-folders
-  One-off move of the old rover/<kind>/solNNNN layout into the new
-  rover/NNNN/<kind> layout (dropping the 'sol' prefix), for kind in
-  iof, edr, practice, working. Safe to re-run — skips anything already
-  migrated or missing.
-  
+    One-off move of the old rover/<kind>/solNNNN layout into the new
+    rover/NNNN/<kind> layout (dropping the 'sol' prefix), for kind in
+    iof, edr, practice, working. Safe to re-run — skips anything already
+    migrated or missing.
+
+Migration utility 2: --rename-folders
+    One-off update to rename folder/file names.  Automated script that will crawl 
+    thru R:\\Rice\\Pancam\\MERA\\####\\working\\<folder> and rename folders and 
+    files to the new naming convention. Both the folder and the FITS file contained
+    within will be renamed.  The new naming convention is as follows:
+        Old formats:
+            Sol####_p####_PMA# (where PMA can have anywhere from 1-4 #'s and no leading 0's)
+            Sol####_p####v#_PMA# (where v and PMA can have anywhere from 1-4 #'s and no leading 0's)
+        New format:
+            Sol####_p####v#_PMA#_<NAME> (where v and PMA can have anywhere from 1-4 #'s and no leading 0's, 
+            and <NAME> is the name of the scene in the database)
+    any _v# version tags appended to the end of a folder are preserved in the folder name,
+    and the FITS file will still omit the version tag.
+    the v# between SEQID and PMA is SEQ_VER, and is found in the database.  
+    The <NAME> is also found in the database, and is the name of the scene.
+
 Backup utility: --backup
     Creates a backup of the database file and the 'working' directories for
     both rovers (includes the fits and sel files),
@@ -37,6 +53,9 @@ Usage:
 
     python setup/import_scenes.py --restructure-folders
     python setup/import_scenes.py --restructure-folders --dry-run
+
+    python setup/import_scenes.py --rename-folders
+    python setup/import_scenes.py --rename-folders --dry-run
 
     python setup/import_scenes.py --wipe
 """
@@ -74,6 +93,19 @@ _OLD_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
 # [scid(1)][inst(1)][sclk(9)][prod(3)][site(4)][seq(5)][eye(1)][filt(1)][who(1)][ver(1)]
 # The seq field (chars 17-21) is always 'P####' — the 4 digits are the seqID.
 _STEM_LEN = 27
+
+# Trailing ROI Studio folder "revision" tag — unrelated to SEQ_VER, just a
+# manual re-save marker analysts append to a folder name. Preserved as-is by
+# --rename-folders and never carried onto the .fits/.sel file names inside,
+# mirroring app/ui/dashboard.py's _find_scene_file convention.
+_REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
+
+# Pre-migration ROI Studio working/ folder name, once any trailing revision
+# tag above has been stripped: Sol####_p####[v#]_PMA# — the embedded 'v#' is
+# only present in one of the two old conventions and is never trusted (SEQ_VER
+# is always re-read from the DB instead). Folders that don't match this exactly
+# (e.g. already carrying a _<NAME> suffix) are assumed already migrated.
+_OLD_ROI_FOLDER_RE = re.compile(r'^Sol(\d{4})_p(\d{4})(?:v\d+)?_PMA(\d+)$')
 
 
 # ── Conversion helpers ────────────────────────────────────────────────────────
@@ -446,6 +478,107 @@ def restructure_folders(pancam_root, dry_run=False):
         print(f"{rover}: {moved} sol/<kind> folder(s) moved, {skipped} skipped (destination existed)")
 
 
+def rename_folders(conn, pancam_root, dry_run=False):
+    """One-off migration: rename ROI Studio working/ folders — and the .fits/.sel
+    files inside them — from the old Sol####_p####[v#]_PMA# convention to the
+    current Sol####_p####v#_PMA#_<NAME> convention, where the v# (SEQ_VER) and
+    <NAME> segments come from the matching DB scene row (matched on rover, sol,
+    seq_id, and pma).
+
+    A trailing "_v#" revision tag is preserved on the folder as-is, and is
+    never carried onto the file names inside it (the files are always named
+    after the folder's own name with that trailing tag stripped).
+
+    Safe to re-run — only folders whose (revision-tag-stripped) name is a bare
+    Sol####_p####[v#]_PMA# match are touched; anything else is assumed already
+    migrated. Folders with no matching scene, an ambiguous (>1) match, or a
+    rename destination that already exists are skipped with a warning.
+    """
+    pancam_path = Path(pancam_root)
+    rovers = ["MERA", "MERB"]
+
+    for rover in rovers:
+        rover_root = pancam_path / rover
+        if not rover_root.exists():
+            print(f"Skipping {rover}: {rover_root} does not exist.")
+            continue
+
+        sol_dirs = sorted(
+            d for d in rover_root.iterdir()
+            if d.is_dir() and _sol_num(d.name) is not None
+        )
+
+        renamed = skipped_not_old = skipped_no_match = 0
+        skipped_ambiguous = skipped_conflict = 0
+
+        for sol_dir in sol_dirs:
+            working_dir = sol_dir / FolderKind.WORKING
+            if not working_dir.exists():
+                continue
+
+            for folder in sorted(d for d in working_dir.iterdir() if d.is_dir()):
+                m = _REVISION_TAG_RE.match(folder.name)
+                if m:
+                    versionless, revision_suffix = m.group(1), f"_v{m.group(2)}"
+                else:
+                    versionless, revision_suffix = folder.name, ""
+
+                old_match = _OLD_ROI_FOLDER_RE.match(versionless)
+                if not old_match:
+                    skipped_not_old += 1
+                    continue
+
+                sol_str, seq_digits, pma_str = old_match.groups()
+                sol = int(sol_str)
+                pma = int(pma_str)
+                seq_id = f"P{seq_digits}"
+
+                rows = conn.execute(
+                    "SELECT name, seq_ver FROM scenes WHERE rover=? AND sol=? AND seq_id=? AND pma=?",
+                    (rover, sol, seq_id, pma),
+                ).fetchall()
+
+                if not rows:
+                    print(f"  SKIP {folder} (no matching scene in DB for {rover} sol{sol:04d} {seq_id} PMA{pma})")
+                    skipped_no_match += 1
+                    continue
+                if len(rows) > 1:
+                    print(f"  SKIP {folder} ({len(rows)} matching scenes in DB for {rover} sol{sol:04d} {seq_id} PMA{pma} - ambiguous)")
+                    skipped_ambiguous += 1
+                    continue
+
+                name, seq_ver = rows[0]
+                if seq_ver is not None:
+                    new_versionless = f"Sol{sol:04d}_p{seq_digits}v{seq_ver}_PMA{pma}_{name}"
+                else:
+                    new_versionless = f"Sol{sol:04d}_p{seq_digits}_PMA{pma}_{name}"
+                new_folder_name = new_versionless + revision_suffix
+                new_folder_path = working_dir / new_folder_name
+
+                if new_folder_path.exists():
+                    print(f"  SKIP {folder} -> {new_folder_path} (destination already exists)")
+                    skipped_conflict += 1
+                    continue
+
+                label = "[dry run] " if dry_run else ""
+                print(f"  {label}{folder.name} -> {new_folder_name}")
+
+                if not dry_run:
+                    for ext in (".fits", ".sel"):
+                        old_file = folder / (versionless + ext)
+                        if old_file.exists():
+                            old_file.rename(folder / (new_versionless + ext))
+                    folder.rename(new_folder_path)
+
+                renamed += 1
+
+        print(
+            f"{rover}: {renamed} renamed, {skipped_not_old} already migrated / not old format, "
+            f"{skipped_no_match} no DB match, {skipped_ambiguous} ambiguous, "
+            f"{skipped_conflict} conflicts\n"
+        )
+
+
 def backup_scenes(pancam_root, db_path):
     """Back up the database and both rovers' 'working' directories under
     into R:\\Rice\\Backup. 
@@ -546,6 +679,13 @@ def main():
              "for kind in iof, edr, practice, working.",
     )
     parser.add_argument(
+        "--rename-folders",
+        action="store_true",
+        help="One-off migration: rename working/ ROI folders (and their .fits/.sel "
+             "files) from Sol####_p####[v#]_PMA# to Sol####_p####v#_PMA#_<NAME>, "
+             "using SEQ_VER and NAME from the matching DB scene.",
+    )
+    parser.add_argument(
         "--wipe",
         action="store_true",
         help="Wipe all scenes and reviews. Users are not affected.",
@@ -577,7 +717,22 @@ def main():
             sys.exit(1)
         restructure_folders(args.path, dry_run=args.dry_run)
         return
-    
+
+    if args.rename_folders:
+        if not args.path:
+            print("Error: --rename-folders requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not Path(args.path).exists():
+            print(f"Error: '{args.path}' does not exist.")
+            sys.exit(1)
+        initialize_db()
+        conn = get_db_connection()
+        try:
+            rename_folders(conn, args.path, dry_run=args.dry_run)
+        finally:
+            conn.close()
+        return
+
     if args.backup:
         if not args.path:
             print("Error: --backup requires --path or PANCAM_PATH in config.py.")

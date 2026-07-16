@@ -568,10 +568,42 @@ def get_supervisor_in_progress(conn, user_id):
 _WEEK_START_SQL = "DATE('now','localtime','weekday 0','-6 days')"
 
 
+def _kickback_scene_count(conn, user_id, date_filter=None):
+    """COUNT(DISTINCT scene_id) of kickbacks against scenes owned by user_id --
+    a scene kicked back more than once in the period still counts once."""
+    sql = ("SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+           "WHERE s.owner_id=? AND r.decision='needs_revision'")
+    if date_filter:
+        sql += f" AND {date_filter}"
+    return conn.execute(sql, (user_id,)).fetchone()[0]
+
+
+def _kickback_event_count(conn, user_id, date_filter=None):
+    """COUNT(*) of kickbacks against scenes owned by user_id -- non-distinct,
+    so a scene kicked back twice in the period counts twice."""
+    sql = ("SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
+           "WHERE s.owner_id=? AND r.decision='needs_revision'")
+    if date_filter:
+        sql += f" AND {date_filter}"
+    return conn.execute(sql, (user_id,)).fetchone()[0]
+
+
 def get_user_stats(conn, user_id):
     """Stat counts for one user derived from the reviews + scenes tables."""
     def count(sql):
         return conn.execute(sql, (user_id,)).fetchone()[0]
+
+    week_filter = f"DATE(r.timestamp)>={_WEEK_START_SQL}"
+    today_filter = "DATE(r.timestamp)=DATE('now','localtime')"
+
+    kicked_back_total = _kickback_scene_count(conn, user_id)
+    kicked_back_week = _kickback_scene_count(conn, user_id, week_filter)
+    kicked_back_today = _kickback_scene_count(conn, user_id, today_filter)
+
+    def avg_kickbacks_per_scene(date_filter, scene_count):
+        events = _kickback_event_count(conn, user_id, date_filter)
+        return round(events / scene_count, 2) if scene_count else 0.0
+
     return {
         'submitted_total': count(
             "SELECT COUNT(DISTINCT scene_id) FROM reviews "
@@ -606,17 +638,12 @@ def get_user_stats(conn, user_id):
             "SELECT COUNT(*) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
             "WHERE s.owner_id=? AND r.stage='supervisor_review' AND r.decision='approved' "
             "AND DATE(r.timestamp)=DATE('now','localtime')"),
-        'kicked_back_total': count(
-            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
-            "WHERE s.owner_id=? AND r.decision='needs_revision'"),
-        'kicked_back_week': count(
-            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
-            "WHERE s.owner_id=? AND r.decision='needs_revision' "
-            f"AND DATE(r.timestamp)>={_WEEK_START_SQL}"),
-        'kicked_back_today': count(
-            "SELECT COUNT(DISTINCT r.scene_id) FROM reviews r JOIN scenes s ON r.scene_id=s.id "
-            "WHERE s.owner_id=? AND r.decision='needs_revision' "
-            "AND DATE(r.timestamp)=DATE('now','localtime')"),
+        'kicked_back_total': kicked_back_total,
+        'kicked_back_week': kicked_back_week,
+        'kicked_back_today': kicked_back_today,
+        'avg_kickbacks_per_scene_total': avg_kickbacks_per_scene(None, kicked_back_total),
+        'avg_kickbacks_per_scene_week': avg_kickbacks_per_scene(week_filter, kicked_back_week),
+        'avg_kickbacks_per_scene_today': avg_kickbacks_per_scene(today_filter, kicked_back_today),
     }
 
 
