@@ -817,6 +817,7 @@ class StatsDialog(SizePersistentDialog):
         ("Peer reviews completed", 'peer_reviewed_total','peer_reviewed_today'),
         ("My scenes approved",     'approved_total',     'approved_today'),
         ("Kicked back to me",      'kicked_back_total',  'kicked_back_today'),
+        ("Rework rate (2+ supervisor kicks / completed)", 'multi_kickback_rate_total', None),
     ]
 
     def __init__(self, conn, user, parent=None):
@@ -857,7 +858,8 @@ class StatsDialog(SizePersistentDialog):
             total = QTableWidgetItem(str(stats[total_key]))
             total.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             tbl.setItem(i, 1, total)
-            today = QTableWidgetItem(str(stats[today_key]))
+            today_text = str(stats[today_key]) if today_key else "—"
+            today = QTableWidgetItem(today_text)
             today.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             tbl.setItem(i, 2, today)
 
@@ -872,7 +874,15 @@ class StatsDialog(SizePersistentDialog):
         ("Peer Rev'd",          'peer_reviewed'),
         ("Approved",            'approved'),
         ("Kicked Back",         'kicked_back'),
-        ("Avg Kickbacks/Scene", 'avg_kickbacks_per_scene'),
+    ]
+
+    # Total-only metrics: no meaningful week/today cut (the two counts span
+    # different points in a scene's lifecycle), so these only appear on the
+    # "Analyst Total" tab, not the Daily/Weekly tabs.
+    _ANALYST_TOTAL_ONLY_METRICS = [
+        ("Completed",           'completed_scenes'),
+        ("2+ Super. Kicks",     'multi_kickback_scenes'),
+        ("Rework Rate",         'multi_kickback_rate'),
     ]
 
     _SUPERVISOR_METRICS = [
@@ -907,6 +917,7 @@ class StatsDialog(SizePersistentDialog):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'today', "Today's"), "Analyst Daily")
+        tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'last', "Last Week's"), "Analyst Last Week")
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'week', "This Week's"), "Analyst Weekly")
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'total', "All-Time"), "Analyst Total")
         tabs.addTab(self._build_supervisor_tab(all_supervisor_stats), "All Supervisor Stats")
@@ -923,13 +934,17 @@ class StatsDialog(SizePersistentDialog):
         v = QVBoxLayout(container)
         v.addWidget(QLabel(f"<b>{label_prefix} Analyst Statistics</b>"))
 
-        headers = ["Username"] + [name for name, _ in self._ANALYST_METRICS]
+        extra_metrics = self._ANALYST_TOTAL_ONLY_METRICS if period == 'total' else []
+        headers = (["Username"] + [name for name, _ in self._ANALYST_METRICS]
+                   + [name for name, _ in extra_metrics])
         tbl = self._make_table(len(all_stats), headers)
 
         for i, (user, stats) in enumerate(all_stats):
             tbl.setItem(i, 0, QTableWidgetItem(user['username']))
             for col, (_, key) in enumerate(self._ANALYST_METRICS, start=1):
                 tbl.setItem(i, col, self._num_item(stats[f'{key}_{period}']))
+            for col, (_, key) in enumerate(extra_metrics, start=1 + len(self._ANALYST_METRICS)):
+                tbl.setItem(i, col, self._num_item(stats[f'{key}_total']))
 
         tbl.setSortingEnabled(True)
         tbl.resizeColumnsToContents()
@@ -968,16 +983,17 @@ class StatsChartDialog(SizePersistentDialog):
 
     _size_key = 'stats_chart'
     _METRICS = [
-        ("Submitted",    'submitted_total',    'submitted_week',    'submitted_today'),
-        ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_week','peer_reviewed_today'),
-        ("Approved",     'approved_total',     'approved_week',     'approved_today'),
-        ("Kicked Back",  'kicked_back_total',  'kicked_back_week',  'kicked_back_today'),
+        ("Submitted",    'submitted_total',    'submitted_last',    'submitted_week',    'submitted_today'),
+        ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_last','peer_reviewed_week','peer_reviewed_today'),
+        ("Approved",     'approved_total',     'approved_last',     'approved_week',     'approved_today'),
+        ("Kicked Back",  'kicked_back_total',  'kicked_back_last',  'kicked_back_week',  'kicked_back_today'),
     ]
 
     _MODES = [
-        ('total', "All Time",  "All-Time Activity"),
-        ('week',  "Weekly",    "This Week's Activity"),
-        ('today', "Today",     "Today's Activity"),
+        ('total', "All Time",   "All-Time Activity"),
+        ('last',  "Last Week",  "Last Week's Activity"),
+        ('week',  "Weekly",     "This Week's Activity"),
+        ('today', "Today",      "Today's Activity"),
     ]
 
     def __init__(self, all_stats, parent=None):
@@ -1025,7 +1041,7 @@ class StatsChartDialog(SizePersistentDialog):
 
     def _metrics_keyed(self):
         """Return [(display_label, stats_dict_key)] for the current toggle mode."""
-        i = {'total': 1, 'week': 2, 'today': 3}[self._mode]
+        i = {'total': 1, 'last': 2, 'week': 3, 'today': 4}[self._mode]
         return [(m[0], m[i]) for m in self._METRICS]
 
     def _title(self):
