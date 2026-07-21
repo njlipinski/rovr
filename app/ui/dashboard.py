@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
 from app.models import SceneStatus, SceneFlag, Role
-from app.paths import FolderKind, kind_path
+from app.paths import FolderKind, kind_path, find_sel_file, find_fits_file
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
@@ -42,11 +42,6 @@ except ImportError:
 
 # Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
-
-# Strips a trailing "_v#" ROI Studio folder revision tag, e.g.
-# 'Sol0055_p2583_PMA656_v4' -> 'Sol0055_p2583_PMA656'. Case-insensitive in case
-# a folder ever gets manually renamed with a capital "_V#".
-_REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
 
 
 def parse_scene_key(scene_key):
@@ -458,6 +453,9 @@ class NotesDialog(SizePersistentDialog):
             open_roi_btn = QPushButton("Open in ROI Studio")
             open_roi_btn.clicked.connect(self._on_open_roi)
             btn_layout.addWidget(open_roi_btn)
+        copy_id_btn = QPushButton("Copy Scene ID")
+        copy_id_btn.clicked.connect(self._on_copy_scene_id)
+        btn_layout.addWidget(copy_id_btn)
         add_btn = QPushButton("Add Note")
         add_btn.clicked.connect(self._on_add)
         close_btn = QPushButton("Close")
@@ -476,6 +474,15 @@ class NotesDialog(SizePersistentDialog):
         layout.addWidget(btn_row)
 
         self._refresh()
+
+    def _on_copy_scene_id(self):
+        """Copy this scene's rover/sol/seqID/obsIX key to the clipboard, e.g.
+        'MERA/sol0055/P2583/obs0', so it can be pasted into Slack or a note
+        elsewhere without retyping it by hand."""
+        scene = get_scene_by_id(self.conn, self.scene_id)
+        if not scene:
+            return
+        QApplication.clipboard().setText(scene['scene_key'])
 
     def _can_edit(self, row):
         return row['type'] == 'note' and (self._is_supervisor or row['author_id'] == self.author_id)
@@ -1304,7 +1311,7 @@ class Dashboard(QMainWindow):
             obs_ix = scene['obs_ix'] if scene['obs_ix'] is not None else 0
             folder_path = kind_path(PANCAM_PATH, rover, sol, FolderKind.IOF)
             args += [folder_path, seq_id, str(obs_ix), 'PCAM']
-            roi_file = self._find_fits_file(scene) or self._find_sel_file(scene)
+            roi_file = find_fits_file(PANCAM_PATH, scene) or find_sel_file(PANCAM_PATH, scene)
             if roi_file:
                 args.append(roi_file)
             notes_thread = get_science_notes(self.conn, scene_id)
@@ -1341,81 +1348,6 @@ class Dashboard(QMainWindow):
         url = f"https://an.rsl.wustl.edu/{rover.lower()}/AN/an3.aspx?it=SS&ii={sol_num}"
         QApplication.clipboard().setText(str(sol_num))
         QDesktopServices.openUrl(QUrl(url))
-
-    def _find_scene_file(self, scene, ext):
-        """Return the path to the most recent file with the given extension (e.g.
-        '.sel', '.fits') for this scene under working/, or None."""
-        rover   = scene['rover']
-        sol     = scene['sol']
-        seq_id  = scene['seq_id']
-        seq_ver = scene['seq_ver']
-        pma     = scene['pma']
-        if None in (rover, sol, seq_id, pma):
-            return None
-
-        sol_dir = kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
-        if not os.path.isdir(sol_dir):
-            return None
-
-        # ROI Studio folder names have gone through three conventions, all of which
-        # may additionally carry a trailing "_v#" revision tag on the FOLDER only:
-        #   base_name                          (original)
-        #   base_name_v#                       (original, revised)
-        #   base_name_NAME                     (current "stable" — NAME is free-form)
-        #   base_name_NAME_v#                  (current, revised)
-        # The file inside a folder is always that folder's own name with the
-        # trailing "_v#" stripped — never reconstructed independently — so we
-        # derive the expected file name per-folder instead of assuming base_name.
-        def scan(is_match):
-            candidates = []
-            for entry in os.scandir(sol_dir):
-                if not entry.is_dir():
-                    continue
-                m = _REVISION_TAG_RE.match(entry.name)
-                versionless = m.group(1) if m else entry.name
-                if not is_match(versionless):
-                    continue
-                file_path = os.path.join(entry.path, versionless + ext)
-                if os.path.isfile(file_path):
-                    candidates.append(file_path)
-            return candidates
-
-        # Whether SEQ_VER is folded into the name depends on which ROI Studio
-        # convention was in effect at the time of that particular save, not on
-        # whether the DB happens to have a seq_ver value for this scene — a
-        # scene can pick up a seq_ver later while its on-disk folders (saved
-        # under an older convention) never had it embedded. Try the strict
-        # match (bare, plus the DB's seq_ver if set) first: it covers the
-        # common case and keeps a useful signal (no match found) when DB and
-        # disk genuinely disagree about which scene a folder belongs to. Only
-        # fall back to a seq_ver-agnostic wildcard if the strict match finds
-        # nothing.
-        seq_id_lower = seq_id.lower()
-        strict_names = {f"Sol{sol:04d}_{seq_id_lower}_PMA{pma}"}
-        if seq_ver is not None:
-            strict_names.add(f"Sol{sol:04d}_{seq_id_lower}v{seq_ver}_PMA{pma}")
-
-        candidates = scan(lambda v: v in strict_names or any(
-            v.startswith(b + '_') for b in strict_names
-        ))
-
-        if not candidates:
-            wildcard_re = re.compile(
-                rf'^Sol{sol:04d}_{re.escape(seq_id_lower)}(?:v\d+)?_PMA{pma}(?:_.*)?$'
-            )
-            candidates = scan(lambda v: bool(wildcard_re.match(v)))
-
-        if not candidates:
-            return None
-        return max(candidates, key=os.path.getmtime)
-
-    def _find_sel_file(self, scene):
-        """Return the path to the most recent .sel file for this scene under working/, or None."""
-        return self._find_scene_file(scene, '.sel')
-
-    def _find_fits_file(self, scene):
-        """Return the path to the most recent .fits file for this scene under working/, or None."""
-        return self._find_scene_file(scene, '.fits')
 
     def _show_notes(self, scene_id, scene_name, on_approve=None, on_kick_back=None):
         NotesDialog(

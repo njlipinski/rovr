@@ -4,7 +4,9 @@
 Primary method: CSV observation table (--csv path/to/obs_table.csv)
     Groups rows by (ROVER, SOL, SEQ_ID, obs_ix) to form unique scenes.
     All 33 CSV columns are stored in the DB; re-running is incremental (skips
-    existing scene_keys).
+    existing scene_keys) — except PMA, which is re-synced from the CSV for
+    already-existing scenes if it differs, since PMA drift between the DB
+    and the actual on-disk ROI Studio folder breaks "Open in ROI Studio".
 
 Fallback method: folder scan (default, no flag needed)
     Walks MERA/####/iof and MERB/####/iof directories looking for
@@ -40,6 +42,11 @@ Backup utility: --backup
     Creates a backup of the database file and the 'working' directories for
     both rovers (includes the fits and sel files),
 
+Utility: --copy-approved
+    Copies the latest .fits file for every approved scene into
+    <path>\\ready_for_asdf. Safe to re-run — skips any scene whose destination
+    file already exists.
+
 Usage:
     python setup/import_scenes.py --csv obs_table.csv
     python setup/import_scenes.py --csv obs_table.csv --dry-run
@@ -58,6 +65,9 @@ Usage:
     python setup/import_scenes.py --rename-folders --dry-run
 
     python setup/import_scenes.py --wipe
+
+    python setup/import_scenes.py --copy-approved
+    python setup/import_scenes.py --copy-approved --dry-run
 """
 
 import csv
@@ -66,6 +76,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -73,7 +84,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import get_db_connection, initialize_db
-from app.paths import FolderKind, sol_dir_name
+from app.models import SceneStatus
+from app.paths import FolderKind, sol_dir_name, find_fits_file
 
 try:
     from config import PANCAM_PATH, DB_PATH
@@ -272,24 +284,83 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
 
 # ── CSV importer ──────────────────────────────────────────────────────────────
 
-# Maps (ROVER, SOL, SEQ_ID, obs_ix) → first-row representative dict.
-# We only need one row per unique scene; subsequent rows for the same scene
-# (same composite key, different filter/eye) are counted but not stored.
+# Maps (ROVER, SOL, SEQ_ID, obs_ix) → representative dict, one row per unique
+# scene. Subsequent rows for the same scene (same composite key, different
+# filter/eye) are counted but not stored, EXCEPT: a stereo scene's L-eye and
+# R-eye frames can carry different PMA (the two cameras point at slightly
+# different mast angles for the same observation), and ROI Studio names its
+# working/ folder after whichever frame it saved from — observed to be the
+# L-eye frame. So the L-eye row is preferred as representative whenever one
+# exists, regardless of row order in the CSV, to keep the stored PMA in sync
+# with what ends up in the folder name. Non-stereo rows (no L/R split) keep
+# the previous first-row-wins behavior.
+
+def _scene_dict(key, rover, sol, seq_id, obs_ix, name, row):
+    return {
+        'scene_key':              key,
+        'name':                   name or f"{rover}sol{sol:04d}{seq_id}obs{obs_ix}",
+        'fn':                     row.get('fn', '').strip() or None,
+        'rover':                  rover,
+        'sclk':                   _to_int(row.get('SCLK')),
+        'product_type':           row.get('PRODUCT_TYPE', '').strip() or None,
+        'site':                   _to_int(row.get('SITE')),
+        'pos':                    _to_int(row.get('POS')),
+        'seq_id':                 seq_id,
+        'filter':                 row.get('FILTER', '').strip() or None,
+        'version':                _to_int(row.get('VERSION')),
+        'sol':                    sol,
+        'seq_ver':                _to_int(row.get('SEQ_VER')),
+        'lines':                  _to_int(row.get('LINES')),
+        'pma':                    _to_int(row.get('PMA')),
+        'obs_ix':                 obs_ix,
+        'frame_type':             row.get('FRAME_TYPE', '').strip() or None,
+        'ltst':                   row.get('LTST', '').strip() or None,
+        'product_creation_time':  row.get('PRODUCT_CREATION_TIME', '').strip() or None,
+        'compression':            row.get('COMPRESSION', '').strip() or None,
+        'first_line':             _to_int(row.get('FIRST_LINE')),
+        'first_sample':           _to_int(row.get('FIRST_SAMPLE')),
+        'samples':                _to_int(row.get('SAMPLES')),
+        'solar_elevation':        _to_float(row.get('SOLAR_ELEVATION')),
+        'instrument_elevation':   _to_float(row.get('INSTRUMENT_ELEVATION')),
+        'instrument_azimuth':     _to_float(row.get('INSTRUMENT_AZIMUTH')),
+        'solar_azimuth':          _to_float(row.get('SOLAR_AZIMUTH')),
+        'incidence_angle':        _to_float(row.get('INCIDENCE_ANGLE')),
+        'emission_angle':         _to_float(row.get('EMISSION_ANGLE')),
+        'phase_angle':            _to_float(row.get('PHASE_ANGLE')),
+        'tau':                    _to_float(row.get('TAU')),
+        'rover_elevation':        _to_float(row.get('ROVER_ELEVATION')),
+        'lon':                    _to_float(row.get('LON')),
+        'lat':                    _to_float(row.get('LAT')),
+    }
 
 def import_scenes_from_csv(conn, csv_path, dry_run=False):
     """Read a CSV observation table and import one scene per unique
     (ROVER, SOL, SEQ_ID, obs_ix) group. All 33 CSV columns are stored
-    from the first representative row of each group."""
+    from one representative row of each group — see _scene_dict's L-eye
+    preference for how that row is picked.
+
+    For scene_keys that already exist, the rest of the row is left alone
+    (see module docstring — re-running is incremental), except PMA: the
+    on-disk ROI Studio working/ folder embeds PMA in its name, and its
+    stereo pair's L-eye and R-eye rows can carry different PMA (the two
+    cameras point at slightly different mast angles for the same
+    observation) — ROI Studio has been observed to always name its folder
+    after the L-eye frame. If the scene's already-stored pma doesn't match
+    the (now correctly L-eye-preferred) representative row's pma, it's
+    corrected here rather than requiring a full re-import."""
 
     path = Path(csv_path)
     if not path.exists():
         print(f"Error: CSV file '{csv_path}' does not exist.")
         sys.exit(1)
 
-    existing = {row[0] for row in conn.execute("SELECT scene_key FROM scenes").fetchall()}
+    existing_rows = conn.execute("SELECT scene_key, name, pma FROM scenes").fetchall()
+    existing = {row[0] for row in existing_rows}
+    existing_pma = {row[0]: (row[1], row[2]) for row in existing_rows}
 
     # First pass — group rows
-    groups = {}   # scene_key → representative row dict
+    groups = {}          # scene_key → representative row dict
+    group_is_l_eye = {}  # scene_key → whether that representative is an L-eye row
     row_counts = {}
     total_rows = 0
 
@@ -319,43 +390,10 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
 
             key = f"{rover}/sol{sol:04d}/{seq_id}/obs{obs_ix}"
             row_counts[key] = row_counts.get(key, 0) + 1
-            if key not in groups:
-                groups[key] = {
-                    'scene_key':              key,
-                    'name':                   name or f"{rover}sol{sol:04d}{seq_id}obs{obs_ix}",
-                    'fn':                     row.get('fn', '').strip() or None,
-                    'rover':                  rover,
-                    'sclk':                   _to_int(row.get('SCLK')),
-                    'product_type':           row.get('PRODUCT_TYPE', '').strip() or None,
-                    'site':                   _to_int(row.get('SITE')),
-                    'pos':                    _to_int(row.get('POS')),
-                    'seq_id':                 seq_id,
-                    'filter':                 row.get('FILTER', '').strip() or None,
-                    'version':                _to_int(row.get('VERSION')),
-                    'sol':                    sol,
-                    'seq_ver':                _to_int(row.get('SEQ_VER')),
-                    'lines':                  _to_int(row.get('LINES')),
-                    'pma':                    _to_int(row.get('PMA')),
-                    'obs_ix':                 obs_ix,
-                    'frame_type':             row.get('FRAME_TYPE', '').strip() or None,
-                    'ltst':                   row.get('LTST', '').strip() or None,
-                    'product_creation_time':  row.get('PRODUCT_CREATION_TIME', '').strip() or None,
-                    'compression':            row.get('COMPRESSION', '').strip() or None,
-                    'first_line':             _to_int(row.get('FIRST_LINE')),
-                    'first_sample':           _to_int(row.get('FIRST_SAMPLE')),
-                    'samples':                _to_int(row.get('SAMPLES')),
-                    'solar_elevation':        _to_float(row.get('SOLAR_ELEVATION')),
-                    'instrument_elevation':   _to_float(row.get('INSTRUMENT_ELEVATION')),
-                    'instrument_azimuth':     _to_float(row.get('INSTRUMENT_AZIMUTH')),
-                    'solar_azimuth':          _to_float(row.get('SOLAR_AZIMUTH')),
-                    'incidence_angle':        _to_float(row.get('INCIDENCE_ANGLE')),
-                    'emission_angle':         _to_float(row.get('EMISSION_ANGLE')),
-                    'phase_angle':            _to_float(row.get('PHASE_ANGLE')),
-                    'tau':                    _to_float(row.get('TAU')),
-                    'rover_elevation':        _to_float(row.get('ROVER_ELEVATION')),
-                    'lon':                    _to_float(row.get('LON')),
-                    'lat':                    _to_float(row.get('LAT')),
-                }
+            is_l_eye = (row.get('FILTER') or '').strip().upper().startswith('L')
+            if key not in groups or (is_l_eye and not group_is_l_eye[key]):
+                groups[key] = _scene_dict(key, rover, sol, seq_id, obs_ix, name, row)
+                group_is_l_eye[key] = is_l_eye
 
     print(f"CSV: {total_rows} rows → {len(groups)} unique scenes")
     print(f"Already in DB: {len(existing)}\n")
@@ -389,6 +427,28 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
 
     label = "  [dry run]" if dry_run else ""
     print(f"{label}+{len(new_scenes)} imported, {skip_count} already existed")
+
+    # PMA drift correction — see docstring. Only scenes already in the DB
+    # (skipped above) are eligible; a CSV pma of None never overwrites a
+    # known value.
+    pma_updates = []
+    for key in existing:
+        s = groups.get(key)
+        if s is None or s['pma'] is None:
+            continue
+        name, db_pma = existing_pma[key]
+        if db_pma != s['pma']:
+            pma_updates.append((key, name, db_pma, s['pma']))
+
+    if pma_updates:
+        row_label = "[dry run] " if dry_run else ""
+        print(f"\n{len(pma_updates)} scene(s) have a PMA mismatch vs. the CSV — correcting to match CSV:")
+        for key, name, old_pma, new_pma in pma_updates:
+            print(f"  {row_label}{name} ({key}): pma {old_pma} -> {new_pma}")
+        if not dry_run:
+            for key, _, _, new_pma in pma_updates:
+                conn.execute("UPDATE scenes SET pma = ? WHERE scene_key = ?", (new_pma, key))
+            conn.commit()
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -586,6 +646,12 @@ def backup_scenes(pancam_root, db_path):
     The DB is snapshotted through SQLite's online backup API (safe against
     concurrent writers on the shared drive) into a timestamped file, so
     every run keeps its own dated copy rather than overwriting the last one.
+    DB_PATH sits on the same shared network drive as the live app -- the
+    backup API's page-by-page read can intermittently surface as a generic
+    SQLite "disk I/O error" rather than a clean lock error on a flaky
+    network filesystem, especially while another user's ROVR instance has
+    the file open. The whole backup is retried a few times before giving up,
+    same spirit as db.py's _with_lock_retry for ordinary writes.
 
     Working-directory files (.sel/.fits) are mirrored into a single
     persistent backup/working tree, preserving the rover/####/working
@@ -601,13 +667,36 @@ def backup_scenes(pancam_root, db_path):
     db_path = Path(db_path)
     timestamp = datetime.now().strftime("%Y_%m_%d")
     db_backup_path = db_backup_dir / f"{db_path.stem}_{timestamp}{db_path.suffix}"
-    src_conn = sqlite3.connect(db_path)
-    dst_conn = sqlite3.connect(db_backup_path)
-    try:
-        src_conn.backup(dst_conn)
-    finally:
-        dst_conn.close()
-        src_conn.close()
+
+    retries = 5
+    last_error = None
+    for attempt in range(retries):
+        if db_backup_path.exists():
+            db_backup_path.unlink()  # drop any partial file from a failed attempt
+        try:
+            src_conn = sqlite3.connect(db_path, timeout=1.0)
+            try:
+                dst_conn = sqlite3.connect(db_backup_path)
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+            last_error = None
+            break
+        except sqlite3.OperationalError as e:
+            last_error = e
+        if attempt < retries - 1:
+            time.sleep(1.0)
+
+    if last_error is not None:
+        if db_backup_path.exists():
+            db_backup_path.unlink()
+        print(f"Error: database backup failed after {retries} attempts: {last_error}")
+        print("The network drive may be busy or briefly unreachable -- try again in a moment.")
+        return
+
     print(f"Database backed up to {db_backup_path}")
 
     copied = skipped = 0
@@ -636,6 +725,46 @@ def backup_scenes(pancam_root, db_path):
                 copied += 1
 
     print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
+
+
+def copy_approved_fits(conn, pancam_root, dry_run=False):
+    """Copy the latest .fits file for every approved (status 7) scene into
+    <pancam_root>/ready_for_asdf.
+
+    Safe to re-run — a destination file that already exists is left alone
+    (never re-copied), same spirit as backup_scenes' working-file mirror.
+    """
+    dest_dir = Path(pancam_root) / "ready_for_asdf"
+    if not dry_run:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+    scenes = conn.execute(
+        "SELECT * FROM scenes WHERE status = ?", (SceneStatus.APPROVED,)
+    ).fetchall()
+
+    copied = skipped = missing = 0
+    for scene in scenes:
+        fits_path = find_fits_file(pancam_root, scene)
+        if not fits_path:
+            print(f"  MISSING .fits for {scene['name']} (scene id {scene['id']})")
+            missing += 1
+            continue
+
+        dest_path = dest_dir / os.path.basename(fits_path)
+        if dest_path.exists():
+            skipped += 1
+            continue
+
+        label = "[dry run] " if dry_run else ""
+        print(f"  {label}{fits_path} -> {dest_path}")
+        if not dry_run:
+            shutil.copy2(fits_path, dest_path)
+        copied += 1
+
+    print(
+        f"\nApproved scenes: {len(scenes)} total, {copied} copied, "
+        f"{skipped} already present, {missing} missing .fits file"
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -695,6 +824,11 @@ def main():
         action="store_true",
         help="Create a backup of the database file and the 'working' directories for both rovers (includes fits and sel files)."
     )
+    parser.add_argument(
+        "--copy-approved",
+        action="store_true",
+        help="Copy the latest .fits file for every approved scene into <path>/ready_for_asdf.",
+    )
     args = parser.parse_args()
 
     # --build-folders and --restructure-folders don't need a DB connection
@@ -743,6 +877,20 @@ def main():
         backup_scenes(args.path, DB_PATH)
         return
 
+    if args.copy_approved:
+        if not args.path:
+            print("Error: --copy-approved requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not Path(args.path).exists():
+            print(f"Error: '{args.path}' does not exist.")
+            sys.exit(1)
+        initialize_db()
+        conn = get_db_connection()
+        try:
+            copy_approved_fits(conn, args.path, dry_run=args.dry_run)
+        finally:
+            conn.close()
+        return
 
     initialize_db()
     conn = get_db_connection()

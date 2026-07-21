@@ -1,4 +1,6 @@
 """supervisor dashboard — pool, personal queue, in-progress, and master list"""
+import os
+import shutil
 from PyQt6.QtWidgets import (
     QPushButton, QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
@@ -19,6 +21,8 @@ from app.controller import (
     mark_scene_issues,
 )
 from app.models import SceneStatus, Decision, Role
+from app.paths import find_fits_file
+from config import PANCAM_PATH
 
 
 def _make_user_combo(conn, roles, current_id):
@@ -389,8 +393,37 @@ class SupervisorDashboard(Dashboard):
             lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
         )
+        if ok:
+            self._copy_fits_to_ready_for_asdf(scene_id)
         self.refresh_task_list()
         return ok
+
+    def _copy_fits_to_ready_for_asdf(self, scene_id):
+        """Mirror the just-approved scene's .fits file into PANCAM_PATH/ready_for_asdf.
+        The approval itself has already been recorded in the DB by this point, so a
+        copy problem (missing file, network hiccup) is surfaced as a warning rather
+        than rolled back or allowed to block the workflow."""
+        scene = get_scene_by_id(self.conn, scene_id)
+        if scene is None:
+            return
+        fits_path = find_fits_file(PANCAM_PATH, scene)
+        if not fits_path:
+            QMessageBox.warning(
+                self, "FITS Not Copied",
+                f"'{scene['name']}' was approved, but no .fits file could be found "
+                "to copy to ready_for_asdf."
+            )
+            return
+        try:
+            dest_dir = os.path.join(PANCAM_PATH, "ready_for_asdf")
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copy2(fits_path, os.path.join(dest_dir, os.path.basename(fits_path)))
+        except OSError as e:
+            QMessageBox.warning(
+                self, "FITS Not Copied",
+                f"'{scene['name']}' was approved, but its .fits file could not be "
+                f"copied to ready_for_asdf:\n{e}"
+            )
 
     def _do_kick_back(self, scene_id, comment=None):
         ok = self._run_db_action(
