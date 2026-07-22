@@ -9,7 +9,10 @@ from app.ui.dashboard import (
 )
 from app.local_settings import get_all_scene_viewed_times, set_scene_viewed_at, get_dark_mode
 from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
-from app.db import get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress, get_analyst_completed
+from app.db import (
+    get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress,
+    get_analyst_completed, get_all_scenes,
+)
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
     release_scene_to_pool, peer_review_scene
@@ -94,9 +97,19 @@ class AnalystDashboard(Dashboard):
         self.completed_table.itemSelectionChanged.connect(self._update_completed_tray)
         completed_section = make_section("My Completed Scenes", self.completed_table, self.completed_tray)
 
+        # All Scenes — full master list, so analysts can add notes to scenes they don't own
+        self.all_scenes_table = make_scene_table(
+            ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags", "Name", "Updated"]
+        )
+        apply_flag_delegate(self.all_scenes_table)
+        self.all_scenes_tray = make_button_tray()
+        self.all_scenes_table.itemSelectionChanged.connect(self._update_all_scenes_tray)
+        all_scenes_section = make_section("All Scenes", self.all_scenes_table, self.all_scenes_tray)
+
         pool_tabs = QTabWidget()
         pool_tabs.addTab(pool_section, "Unclaimed Scenes")
         pool_tabs.addTab(completed_section, "My Completed Scenes")
+        pool_tabs.addTab(all_scenes_section, "All Scenes")
 
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(my_section)
@@ -204,11 +217,26 @@ class AnalystDashboard(Dashboard):
             self.completed_table.setItem(i, 7, QTableWidgetItem(str(scene['updated_at'] or '—')))
         self._fill_table(self.completed_table, get_analyst_completed(self.conn, analyst_id), fill_completed)
 
+        def fill_all_scenes(i, scene):
+            rover, sol, seq_id, obs = parse_scene_key(scene['scene_key'])
+            self.all_scenes_table.setItem(i, 0, QTableWidgetItem(str(scene['id'])))
+            self.all_scenes_table.setItem(i, 1, QTableWidgetItem(rover))
+            self.all_scenes_table.setItem(i, 2, QTableWidgetItem(sol))
+            self.all_scenes_table.setItem(i, 3, QTableWidgetItem(seq_id))
+            self.all_scenes_table.setItem(i, 4, QTableWidgetItem(SceneStatus.LABELS.get(scene['status'], str(scene['status']))))
+            self.all_scenes_table.setItem(i, 5, QTableWidgetItem(obs))
+            self.all_scenes_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
+            self.all_scenes_table.setItem(i, 7, make_flag_item(scene['flags']))
+            self.all_scenes_table.setItem(i, 8, QTableWidgetItem(scene['name']))
+            self.all_scenes_table.setItem(i, 9, QTableWidgetItem(str(scene['updated_at'] or '—')))
+        self._fill_table(self.all_scenes_table, get_all_scenes(self.conn), fill_all_scenes)
+
         self._update_my_queue_tray()
         self._update_in_progress_tray()
         self._update_review_tray()
         self._update_pool_tray()
         self._update_completed_tray()
+        self._update_all_scenes_tray()
 
     # ── Button tray updaters ────────────────────────────────────────────
 
@@ -273,6 +301,21 @@ class AnalystDashboard(Dashboard):
                             ("Open in Notebook",   self.handle_completed_open_notebook),
                             ("See Notes",          self.handle_completed_notes),
                             ("Science Notes",      self.handle_completed_science_notes)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
+
+    def _update_all_scenes_tray(self):
+        clear_tray(self.all_scenes_tray)
+        if self.selected_id(self.all_scenes_table) is None:
+            return
+        layout = self.all_scenes_tray.layout()
+        assert layout is not None
+        for label, slot in [("Open in ROI Studio", self.handle_all_scenes_open_roi),
+                            ("Open in Notebook",   self.handle_all_scenes_open_notebook),
+                            ("See Notes",          self.handle_all_scenes_notes),
+                            ("Science Notes",      self.handle_all_scenes_science_notes),
+                            ("Flag Scene",         self.handle_flag_from_all_scenes)]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
@@ -353,6 +396,38 @@ class AnalystDashboard(Dashboard):
         cells = [self.completed_table.item(row, c) for c in (1, 2, 3)]
         scene_name = " ".join(c.text() if c else '' for c in cells)
         self._show_science_notes(scene_id, scene_name)
+
+    # ── All Scenes handlers ─────────────────────────────────────────────
+
+    def handle_all_scenes_open_roi(self):
+        scene_id = self.selected_id(self.all_scenes_table)
+        if scene_id is None:
+            return
+        super().handle_open_roi(scene_id)
+
+    def handle_all_scenes_open_notebook(self):
+        scene_id = self.selected_id(self.all_scenes_table)
+        if scene_id is None:
+            return
+        super().handle_open_notebook(scene_id)
+
+    def handle_all_scenes_notes(self):
+        scene_id = self.selected_id(self.all_scenes_table)
+        if scene_id is None:
+            return
+        self._show_notes(scene_id, self._scene_name_from(self.all_scenes_table))
+
+    def handle_all_scenes_science_notes(self):
+        scene_id = self.selected_id(self.all_scenes_table)
+        if scene_id is None:
+            return
+        self._show_science_notes(scene_id, self._scene_name_from(self.all_scenes_table))
+
+    def handle_flag_from_all_scenes(self):
+        scene_id = self.selected_id(self.all_scenes_table)
+        if scene_id is None:
+            return
+        self.handle_flag_scene(scene_id, self._scene_name_from(self.all_scenes_table))
 
     # ── My Queue handlers ───────────────────────────────────────────────
 

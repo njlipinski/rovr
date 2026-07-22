@@ -373,13 +373,6 @@ class SupervisorDashboard(Dashboard):
             btn.clicked.connect(getattr(self, handler))
             layout.addWidget(btn)
 
-    # ── Shared helper ─────────────────────────────────────────────────────
-
-    def _scene_name_from(self, table):
-        row = table.currentRow()
-        cells = [table.item(row, c) for c in (1, 2, 3)]
-        return " ".join(c.text() if c else '' for c in cells)
-
     # ── My Work Queue handlers ────────────────────────────────────────────
 
     def _my_queue_scene_id(self):

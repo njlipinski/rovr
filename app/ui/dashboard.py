@@ -1276,6 +1276,12 @@ class Dashboard(QMainWindow):
                 return status
         return None
 
+    def _scene_name_from(self, table):
+        """Return 'Rover Sol SeqID' from cols 1-3 of the selected row."""
+        row = table.currentRow()
+        cells = [table.item(row, c) for c in (1, 2, 3)]
+        return " ".join(c.text() if c else '' for c in cells)
+
     def _prompt_for_roi_studio_path(self):
         """Ask the user to locate ROI Studio and save the path. Returns the path, or None if cancelled."""
         if sys.platform == 'darwin':
