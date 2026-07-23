@@ -173,8 +173,8 @@ def _describe_scene_edit(conn, old_scene, new_status, owner_id, peer_reviewer_id
 
 
 def supervisor_edit_scene(conn, scene_id, supervisor_id, new_status,
-                           owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by,
-                           comments=None):
+                            owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by,
+                            comments=None):
     """supervisor admin edit: set a scene's status and directly reassign owner,
     peer reviewer, supervisor, and claimed_by in one action. Pass through the
     scene's current values for any field that isn't being changed."""

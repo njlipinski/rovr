@@ -1326,8 +1326,8 @@ class Dashboard(QMainWindow):
 
         try:
             if sys.platform == 'darwin':
-                # .app bundles are directories — must launch via `open -a` like Finder does
-                subprocess.Popen(['open', '-a', path, '--args'] + args[1:])
+                # .app bundles are directories — must launch via `open -n -a` like Finder does
+                subprocess.Popen(['open', '-n', '-a', path, '--args'] + args[1:])
             else:
                 subprocess.Popen(args)
         except OSError as e:
