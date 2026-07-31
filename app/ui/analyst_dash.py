@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
     Dashboard, SCENE_BUTTONS,
-    make_scene_table, make_button_tray, make_section,
+    make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
 from app.local_settings import get_all_scene_viewed_times, get_dark_mode
@@ -58,46 +58,34 @@ class AnalystDashboard(Dashboard):
             ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Analyst 1", "Flags", "Name", "Updated"]
         )
         apply_flag_delegate(self.my_queue_table)
-        self.my_queue_tray = make_button_tray()
-        self.my_queue_table.itemSelectionChanged.connect(self._update_my_queue_tray)
-        my_section = make_section("My Work Queue", self.my_queue_table, self.my_queue_tray)
+        my_section = make_section("My Work Queue", self.my_queue_table)
 
         # In Progress — scenes I've contributed to that are still moving
         self.in_progress_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Status", "Current Holder", "Name", "Updated"]
         )
-        self.in_progress_tray = make_button_tray()
-        self.in_progress_table.itemSelectionChanged.connect(self._update_in_progress_tray)
-        in_progress_section = make_section("In Progress", self.in_progress_table, self.in_progress_tray)
+        in_progress_section = make_section("In Progress", self.in_progress_table)
 
         # Ready for Peer Review
         self.review_queue_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name", "Owner", "Updated"])
         apply_flag_delegate(self.review_queue_table)
-        self.review_queue_tray = make_button_tray()
-        self.review_queue_table.itemSelectionChanged.connect(self._update_review_tray)
-        review_section = make_section("Ready for Peer Review", self.review_queue_table, self.review_queue_tray)
+        review_section = make_section("Ready for Peer Review", self.review_queue_table)
 
         # Unclaimed Scenes
         self.scene_pool_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "Flags", "Name", "Updated"])
         apply_flag_delegate(self.scene_pool_table)
-        self.scene_pool_tray = make_button_tray()
-        self.scene_pool_table.itemSelectionChanged.connect(self._update_pool_tray)
-        pool_section = make_section("Unclaimed Scenes", self.scene_pool_table, self.scene_pool_tray)
+        pool_section = make_section("Unclaimed Scenes", self.scene_pool_table)
 
         # My Completed Scenes
         self.completed_table = make_scene_table(["ID", "Rover", "Sol", "SeqID", "Obs", "My Role", "Name", "Updated"])
-        self.completed_tray = make_button_tray()
-        self.completed_table.itemSelectionChanged.connect(self._update_completed_tray)
-        completed_section = make_section("My Completed Scenes", self.completed_table, self.completed_tray)
+        completed_section = make_section("My Completed Scenes", self.completed_table)
 
         # All Scenes — full master list, so analysts can add notes to scenes they don't own
         self.all_scenes_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags", "Name", "Updated"]
         )
         apply_flag_delegate(self.all_scenes_table)
-        self.all_scenes_tray = make_button_tray()
-        self.all_scenes_table.itemSelectionChanged.connect(self._update_all_scenes_tray)
-        all_scenes_section = make_section("All Scenes", self.all_scenes_table, self.all_scenes_tray)
+        all_scenes_section = make_section("All Scenes", self.all_scenes_table)
 
         pool_tabs = QTabWidget()
         pool_tabs.addTab(pool_section, "Unclaimed Scenes")
@@ -125,7 +113,20 @@ class AnalystDashboard(Dashboard):
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_task_list)
 
+        tray_bar = self.make_tray_bar([
+            (self.my_queue_table,     "My Work Queue",         self._my_queue_actions),
+            (self.in_progress_table,  "In Progress",           SCENE_BUTTONS),
+            (self.review_queue_table, "Ready for Peer Review",
+             [("Claim for Review", "handle_claim_for_review"), 'flag']),
+            (self.scene_pool_table,   "Unclaimed Scenes",
+             [("Claim Scene", "handle_claim_from_pool"), 'flag']),
+            (self.completed_table,    "My Completed Scenes",
+             ['open_roi', 'open_notebook', 'notes', 'science_notes']),
+            (self.all_scenes_table,   "All Scenes",            SCENE_BUTTONS),
+        ])
+
         self.main_content_layout.addWidget(splitter)
+        self.main_content_layout.addWidget(tray_bar)
         self.main_content_layout.addWidget(refresh_button)
 
         self.refresh_task_list()
@@ -224,54 +225,14 @@ class AnalystDashboard(Dashboard):
             self.all_scenes_table.setItem(i, 9, QTableWidgetItem(str(scene['updated_at'] or '—')))
         self._fill_table(self.all_scenes_table, get_all_scenes(self.conn), fill_all_scenes)
 
-        self._update_my_queue_tray()
-        self._update_in_progress_tray()
-        self._update_review_tray()
-        self._update_pool_tray()
-        self._update_completed_tray()
-        self._update_all_scenes_tray()
+        self.update_shared_tray()
 
-    # ── Button tray updaters ────────────────────────────────────────────
+    # ── Button tray ─────────────────────────────────────────────────────
 
-    def _update_my_queue_tray(self):
-        status = self.selected_status(self.my_queue_table)
-        self.build_tray(
-            self.my_queue_tray, self.my_queue_table,
-            _MY_QUEUE_BUTTONS.get(status, []), enabled=status is not None,
-        )
-
-    def _update_in_progress_tray(self):
-        self.build_tray(
-            self.in_progress_tray, self.in_progress_table, SCENE_BUTTONS,
-            enabled=self.selected_id(self.in_progress_table) is not None,
-        )
-
-    def _update_review_tray(self):
-        self.build_tray(
-            self.review_queue_tray, self.review_queue_table,
-            [("Claim for Review", "handle_claim_for_review"), 'flag'],
-            enabled=bool(self.selected_ids(self.review_queue_table)),
-        )
-
-    def _update_pool_tray(self):
-        self.build_tray(
-            self.scene_pool_tray, self.scene_pool_table,
-            [("Claim Scene", "handle_claim_from_pool"), 'flag'],
-            enabled=bool(self.selected_ids(self.scene_pool_table)),
-        )
-
-    def _update_completed_tray(self):
-        self.build_tray(
-            self.completed_tray, self.completed_table,
-            ['open_roi', 'open_notebook', 'notes', 'science_notes'],
-            enabled=self.selected_id(self.completed_table) is not None,
-        )
-
-    def _update_all_scenes_tray(self):
-        self.build_tray(
-            self.all_scenes_tray, self.all_scenes_table, SCENE_BUTTONS,
-            enabled=self.selected_id(self.all_scenes_table) is not None,
-        )
+    def _my_queue_actions(self):
+        """My Work Queue mixes statuses 1/3/4, so its buttons depend on which
+        row is selected rather than on the table alone."""
+        return _MY_QUEUE_BUTTONS.get(self.selected_status(self.my_queue_table), [])
 
     # ── My Queue handlers ───────────────────────────────────────────────
 

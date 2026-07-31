@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
     Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
-    make_scene_table, make_button_tray, make_section,
+    make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
 from app.db import (
@@ -161,41 +161,27 @@ class SupervisorDashboard(Dashboard):
             ["ID", "Rover", "Sol", "SeqID", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.my_queue_table)
-        self.my_queue_tray = make_button_tray()
-        self.my_queue_table.itemSelectionChanged.connect(self._update_my_queue_tray)
-        my_queue_section = make_section(
-            "My Work Queue", self.my_queue_table, self.my_queue_tray
-        )
+        my_queue_section = make_section("My Work Queue", self.my_queue_table)
 
         # Supervisor Pool — shared, unclaimed (status 5)
         self.pool_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.pool_table)
-        self.pool_tray = make_button_tray()
-        self.pool_table.itemSelectionChanged.connect(self._update_pool_tray)
-        pool_section = make_section(
-            "Supervisor Pool", self.pool_table, self.pool_tray
-        )
+        pool_section = make_section("Supervisor Pool", self.pool_table)
 
         # In Progress — scenes I kicked back, still being revised (status 4)
         self.in_progress_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Obs", "Status", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.in_progress_table)
-        self.in_progress_tray = make_button_tray()
-        self.in_progress_table.itemSelectionChanged.connect(self._update_in_progress_tray)
-        in_progress_section = make_section(
-            "In Progress", self.in_progress_table, self.in_progress_tray
-        )
+        in_progress_section = make_section("In Progress", self.in_progress_table)
 
         # Master scene list
         self.master_table = make_scene_table([h for h, _ in _MASTER_COLS])
         apply_flag_delegate(self.master_table)
-        self.master_tray = make_button_tray()
-        self.master_table.itemSelectionChanged.connect(self._update_master_tray)
         self.master_section = make_section(
-            "All Scenes", self.master_table, self.master_tray, count_fn=_master_status_counts
+            "All Scenes", self.master_table, count_fn=_master_status_counts
         )
         master_section = self.master_section
 
@@ -219,7 +205,24 @@ class SupervisorDashboard(Dashboard):
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_task_list)
 
+        tray_bar = self.make_tray_bar([
+            (self.my_queue_table, "My Work Queue",
+             [("Approve",        "handle_approve"),
+              ("Kick Back",      "handle_kick_back"),
+              ("Mark Bad Scene", "handle_mark_bad_scene"),
+              ("Release",        "handle_release"),
+              *SCENE_BUTTONS]),
+            (self.pool_table, "Supervisor Pool",
+             [("Claim", "handle_claim"), *SCENE_BUTTONS]),
+            (self.in_progress_table, "In Progress", SCENE_BUTTONS),
+            (self.master_table, "All Scenes",
+             [*SCENE_BUTTONS,
+              ("Edit Scene",  "handle_edit_scene"),
+              ("Reset Scene", "handle_reset_scene")]),
+        ])
+
         self.main_content_layout.addWidget(main_splitter)
+        self.main_content_layout.addWidget(tray_bar)
         self.main_content_layout.addWidget(refresh_button)
 
         self.refresh_task_list()
@@ -291,45 +294,7 @@ class SupervisorDashboard(Dashboard):
         self._fill_table(self.master_table, get_all_scenes(self.conn), fill_master)
         self.master_section.refresh_count()
 
-        self._update_my_queue_tray()
-        self._update_pool_tray()
-        self._update_in_progress_tray()
-        self._update_master_tray()
-
-    # ── Button trays ─────────────────────────────────────────────────────
-
-    def _update_my_queue_tray(self):
-        self.build_tray(
-            self.my_queue_tray, self.my_queue_table,
-            [("Approve",        "handle_approve"),
-             ("Kick Back",      "handle_kick_back"),
-             ("Mark Bad Scene", "handle_mark_bad_scene"),
-             ("Release",        "handle_release"),
-             *SCENE_BUTTONS],
-            enabled=self.selected_id(self.my_queue_table) is not None,
-        )
-
-    def _update_pool_tray(self):
-        self.build_tray(
-            self.pool_tray, self.pool_table,
-            [("Claim", "handle_claim"), *SCENE_BUTTONS],
-            enabled=bool(self.selected_ids(self.pool_table)),
-        )
-
-    def _update_in_progress_tray(self):
-        self.build_tray(
-            self.in_progress_tray, self.in_progress_table, SCENE_BUTTONS,
-            enabled=self.selected_id(self.in_progress_table) is not None,
-        )
-
-    def _update_master_tray(self):
-        self.build_tray(
-            self.master_tray, self.master_table,
-            [*SCENE_BUTTONS,
-             ("Edit Scene",  "handle_edit_scene"),
-             ("Reset Scene", "handle_reset_scene")],
-            enabled=self.selected_id(self.master_table) is not None,
-        )
+        self.update_shared_tray()
 
     # ── My Work Queue handlers ────────────────────────────────────────────
 

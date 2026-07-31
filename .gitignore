@@ -2,10 +2,11 @@ config.py
 notes.txt
 *.sqlite
 *.md
+*.csv
 **/__pycache__
 **/*.pyc
 /build/
 /dist/
 /app/version.py
-*.csv
 /.vscode
+/tests

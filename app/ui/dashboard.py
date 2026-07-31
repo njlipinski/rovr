@@ -209,8 +209,10 @@ SCENE_ACTIONS = {
 SCENE_BUTTONS = ('open_roi', 'open_notebook', 'notes', 'science_notes', 'flag')
 
 
-def make_section(label_text, table, tray, count_fn=None):
-    """Wrap a label + table + button tray into a QSplitter-compatible widget.
+def make_section(label_text, table, tray=None, count_fn=None):
+    """Wrap a label + table (+ optional button tray) into a QSplitter-compatible
+    widget. Both dashboards now share one tray at the window bottom, so `tray`
+    is normally omitted; it stays supported for a section that wants its own.
 
     If count_fn is given, it's called with the table and should return a
     string breakdown (e.g. "12 Unclaimed, 8 Claimed") appended after the
@@ -239,7 +241,8 @@ def make_section(label_text, table, tray, count_fn=None):
 
     layout.addWidget(header_label)
     layout.addWidget(table)
-    layout.addWidget(tray)
+    if tray is not None:
+        layout.addWidget(tray)
     # rowsInserted fires from setRowCount(), before _fill_table's loop populates
     # cells -- so a count_fn reading cell contents needs an explicit recount
     # once filling actually finishes. Exposed here for callers to invoke.
@@ -1408,6 +1411,90 @@ class Dashboard(QMainWindow):
             btn = QPushButton(label)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
+
+    # ── The shared bottom tray ──────────────────────────────────────────
+    # Both dashboards show several scene tables at once. Rather than give each
+    # one its own tray (which duplicated "Open in ROI Studio" six times on the
+    # analyst dashboard alone), all buttons live in a single tray at the bottom
+    # of the window and act on whichever table currently holds the selection.
+    # Selecting in one table clears the others, so "the selected scene" is
+    # never ambiguous. See ADR-021.
+
+    def make_tray_bar(self, sections):
+        """Build the shared tray and wire up single-table selection.
+
+        `sections` is a sequence of (table, title, actions), where `actions` is
+        either a list of build_tray() entries or a zero-argument callable
+        returning one — the latter for tables whose buttons depend on the
+        selected row's status. Returns the widget to place at the bottom of the
+        dashboard, below the tables."""
+        self._sections = list(sections)
+        self._active_table = None
+        self._syncing = False
+
+        self.shared_tray = make_button_tray()
+        self.tray_label = QLabel()
+        self.tray_label.setObjectName("trayLabel")
+
+        for table, _, _ in self._sections:
+            table.itemSelectionChanged.connect(
+                lambda t=table: self._on_table_selection_changed(t)
+            )
+
+        bar = QWidget()
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self.tray_label)
+        layout.addWidget(self.shared_tray)
+        self.update_shared_tray()
+        return bar
+
+    def _on_table_selection_changed(self, table):
+        """Make `table` the active one and clear every other table's selection.
+
+        clearSelection() re-emits itemSelectionChanged on the tables it
+        touches, so the _syncing guard is what stops this from recursing."""
+        if self._syncing:
+            return
+        if not table.selectedItems():
+            # Selection was cleared (often by a refresh repopulating rows).
+            # Only the active table losing its selection empties the tray.
+            if table is self._active_table:
+                self._active_table = None
+                self.update_shared_tray()
+            return
+        self._syncing = True
+        try:
+            for other, _, _ in self._sections:
+                if other is not table:
+                    other.clearSelection()
+        finally:
+            self._syncing = False
+        self._active_table = table
+        self.update_shared_tray()
+
+    def update_shared_tray(self):
+        """Rebuild the shared tray for the active table's current selection."""
+        table = self._active_table
+        # Also treat a stale active table as empty: a refresh can repopulate
+        # rows without the selection-changed signal reaching us.
+        if table is None or not table.selectedItems():
+            self._active_table = None
+            self.build_tray(self.shared_tray, None, [], enabled=False)
+            self.tray_label.setText("No scene selected")
+            return
+        title = next(t for tbl, t, _ in self._sections if tbl is table)
+        actions = next(a for tbl, _, a in self._sections if tbl is table)
+        if callable(actions):
+            actions = actions()
+        rows = len(self.selected_ids(table))
+        name = self._scene_name_from(table) if rows == 1 else f"{rows} scenes"
+        # The label names the table as well as the scene: with the tray at the
+        # bottom of the window, and some tables behind an unselected tab, the
+        # highlighted row itself may not be visible.
+        self.tray_label.setText(f"Selected: {name}  —  {title}")
+        self.build_tray(self.shared_tray, table, actions, enabled=True)
 
     def _review_callbacks(self, table, scene_id):
         """Approve/Kick Back kwargs for the notes dialog when the selected row
