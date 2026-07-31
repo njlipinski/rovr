@@ -21,6 +21,7 @@ from app.local_settings import (
     get_dark_mode, set_dark_mode,
     get_ui_scale, set_ui_scale,
     get_dialog_size, set_dialog_size,
+    set_scene_viewed_at,
 )
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme
 
@@ -190,6 +191,22 @@ def clear_tray(tray):
         item = layout.takeAt(0)
         if item.widget():
             item.widget().deleteLater()
+
+
+# Scene actions that work the same way on any scene table: keyed by a short
+# name, each mapping to (button label, Dashboard method). Dashboard.build_tray()
+# binds these to whichever table the tray belongs to, so no dashboard needs a
+# per-(table, action) wrapper method.
+SCENE_ACTIONS = {
+    'open_roi':      ("Open in ROI Studio", 'act_open_roi'),
+    'open_notebook': ("Open in Notebook",   'act_open_notebook'),
+    'notes':         ("See Notes",          'act_notes'),
+    'science_notes': ("Science Notes",      'act_science_notes'),
+    'flag':          ("Flag Scene",         'act_flag'),
+}
+
+# The full set, in the order it should appear in a tray.
+SCENE_BUTTONS = ('open_roi', 'open_notebook', 'notes', 'science_notes', 'flag')
 
 
 def make_section(label_text, table, tray, count_fn=None):
@@ -1355,12 +1372,91 @@ class Dashboard(QMainWindow):
         QApplication.clipboard().setText(str(sol_num))
         QDesktopServices.openUrl(QUrl(url))
 
+    # ── Generic per-table scene actions ─────────────────────────────────
+    # Each takes the table whose selection it acts on. Trays bind them to a
+    # specific table via build_tray(), so a dashboard never defines its own
+    # per-table wrapper — which is what made these actions easy to shadow.
+
+    def _bind(self, attr, table):
+        """Bind a per-table action to a slot safe for QPushButton.clicked.
+
+        clicked emits a `checked` bool. Swallowing it here keeps the action
+        signatures clean and stops the extra argument from reaching them."""
+        action = getattr(self, attr)
+        return lambda *_: action(table)
+
+    def build_tray(self, tray, table, actions, enabled=True):
+        """Rebuild `tray`'s buttons for the current selection in `table`.
+
+        Each entry in `actions` is either a SCENE_ACTIONS key (bound to
+        `table`) or an explicit (label, method name) pair for a handler that
+        is specific to this dashboard, like Submit or Claim. Passing
+        enabled=False just clears the tray — callers decide what counts as a
+        usable selection, since the bulk-claim trays accept multiple rows."""
+        clear_tray(tray)
+        if not enabled:
+            return
+        layout = tray.layout()
+        assert layout is not None
+        for entry in actions:
+            if isinstance(entry, str):
+                label, attr = SCENE_ACTIONS[entry]
+                slot = self._bind(attr, table)
+            else:
+                label, handler = entry
+                slot = getattr(self, handler)
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
+
+    def _review_callbacks(self, table, scene_id):
+        """Approve/Kick Back kwargs for the notes dialog when the selected row
+        is one this user may act on. No review buttons by default; the
+        dashboards override this for their own work queue."""
+        return {}
+
+    def act_open_roi(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is not None:
+            self.handle_open_roi(scene_id)
+
+    def act_open_notebook(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is not None:
+            self.handle_open_notebook(scene_id)
+
+    def act_notes(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is None:
+            return
+        self._show_notes(scene_id, self._scene_name_from(table),
+                         **self._review_callbacks(table, scene_id))
+        self._mark_viewed(scene_id)
+
+    def act_science_notes(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is None:
+            return
+        self._show_science_notes(scene_id, self._scene_name_from(table))
+        self._mark_viewed(scene_id)
+
+    def act_flag(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is not None:
+            self.handle_flag_scene(scene_id, self._scene_name_from(table))
+
+    def _mark_viewed(self, scene_id):
+        """Clear the new-activity highlight after notes have been read, from
+        whichever table they were opened from."""
+        set_scene_viewed_at(scene_id)
+        self.refresh_task_list()
+
     def _show_notes(self, scene_id, scene_name, on_approve=None, on_kick_back=None):
         NotesDialog(
             self.conn, scene_id, scene_name, self.user['id'], self,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
             on_approve=on_approve, on_kick_back=on_kick_back,
-            on_open_roi=lambda: self.handle_open_roi(scene_id),
+            on_open_roi=(lambda: self.handle_open_roi(scene_id)),
         ).exec()
 
     def _show_science_notes(self, scene_id, scene_name):
@@ -1370,7 +1466,7 @@ class Dashboard(QMainWindow):
             format_row=_format_science_note_row, add_note_fn=add_science_note,
             update_note_fn=update_science_note, delete_note_fn=delete_science_note,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
-            on_open_roi=lambda: self.handle_open_roi(scene_id),
+            on_open_roi=(lambda: self.handle_open_roi(scene_id)),
         ).exec()
 
     def handle_flag_scene(self, scene_id, scene_name=""):

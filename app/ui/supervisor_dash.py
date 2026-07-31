@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, WordSelectTextEdit, SizePersistentDialog,
-    make_scene_table, make_button_tray, make_section, clear_tray,
+    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
+    make_scene_table, make_button_tray, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
 from app.db import (
@@ -299,79 +299,37 @@ class SupervisorDashboard(Dashboard):
     # ── Button trays ─────────────────────────────────────────────────────
 
     def _update_my_queue_tray(self):
-        clear_tray(self.my_queue_tray)
-        if self.selected_id(self.my_queue_table) is None:
-            return
-        layout = self.my_queue_tray.layout()
-        assert layout is not None
-        for label, handler in [
-            ("Approve",            "handle_approve"),
-            ("Kick Back",          "handle_kick_back"),
-            ("Mark Bad Scene",     "handle_mark_bad_scene"),
-            ("Release",            "handle_release"),
-            ("Open in ROI Studio", "handle_my_queue_open_roi"),
-            ("Open in Notebook",   "handle_my_queue_open_notebook"),
-            ("See Notes",          "handle_my_queue_see_notes"),
-            ("Science Notes",      "handle_my_queue_see_science_notes"),
-            ("Flag Scene",         "handle_my_queue_flag"),
-        ]:
-            btn = QPushButton(label)
-            btn.clicked.connect(getattr(self, handler))
-            layout.addWidget(btn)
+        self.build_tray(
+            self.my_queue_tray, self.my_queue_table,
+            [("Approve",        "handle_approve"),
+             ("Kick Back",      "handle_kick_back"),
+             ("Mark Bad Scene", "handle_mark_bad_scene"),
+             ("Release",        "handle_release"),
+             *SCENE_BUTTONS],
+            enabled=self.selected_id(self.my_queue_table) is not None,
+        )
 
     def _update_pool_tray(self):
-        clear_tray(self.pool_tray)
-        if not self.selected_ids(self.pool_table):
-            return
-        layout = self.pool_tray.layout()
-        assert layout is not None
-        for label, handler in [
-            ("Claim",              "handle_claim"),
-            ("Open in ROI Studio", "handle_pool_open_roi"),
-            ("Open in Notebook",   "handle_pool_open_notebook"),
-            ("See Notes",          "handle_pool_see_notes"),
-            ("Science Notes",      "handle_pool_see_science_notes"),
-            ("Flag Scene",         "handle_pool_flag"),
-        ]:
-            btn = QPushButton(label)
-            btn.clicked.connect(getattr(self, handler))
-            layout.addWidget(btn)
+        self.build_tray(
+            self.pool_tray, self.pool_table,
+            [("Claim", "handle_claim"), *SCENE_BUTTONS],
+            enabled=bool(self.selected_ids(self.pool_table)),
+        )
 
     def _update_in_progress_tray(self):
-        clear_tray(self.in_progress_tray)
-        if self.selected_id(self.in_progress_table) is None:
-            return
-        layout = self.in_progress_tray.layout()
-        assert layout is not None
-        for label, handler in [
-            ("Open in ROI Studio", "handle_in_progress_open_roi"),
-            ("Open in Notebook",   "handle_in_progress_open_notebook"),
-            ("See Notes",          "handle_in_progress_see_notes"),
-            ("Science Notes",      "handle_in_progress_see_science_notes"),
-            ("Flag Scene",         "handle_in_progress_flag"),
-        ]:
-            btn = QPushButton(label)
-            btn.clicked.connect(getattr(self, handler))
-            layout.addWidget(btn)
+        self.build_tray(
+            self.in_progress_tray, self.in_progress_table, SCENE_BUTTONS,
+            enabled=self.selected_id(self.in_progress_table) is not None,
+        )
 
     def _update_master_tray(self):
-        clear_tray(self.master_tray)
-        if self.selected_id(self.master_table) is None:
-            return
-        layout = self.master_tray.layout()
-        assert layout is not None
-        for label, handler in [
-            ("Open in ROI Studio", "handle_master_open_roi"),
-            ("Open in Notebook",   "handle_master_open_notebook"),
-            ("See Notes",          "handle_master_see_notes"),
-            ("Science Notes",      "handle_master_see_science_notes"),
-            ("Flag Scene",         "handle_master_flag"),
-            ("Edit Scene",         "handle_edit_scene"),
-            ("Reset Scene",        "handle_reset_scene"),
-        ]:
-            btn = QPushButton(label)
-            btn.clicked.connect(getattr(self, handler))
-            layout.addWidget(btn)
+        self.build_tray(
+            self.master_tray, self.master_table,
+            [*SCENE_BUTTONS,
+             ("Edit Scene",  "handle_edit_scene"),
+             ("Reset Scene", "handle_reset_scene")],
+            enabled=self.selected_id(self.master_table) is not None,
+        )
 
     # ── My Work Queue handlers ────────────────────────────────────────────
 
@@ -380,6 +338,17 @@ class SupervisorDashboard(Dashboard):
         if scene_id is None:
             QMessageBox.warning(self, "No Selection", "Select a scene first.")
         return scene_id
+
+    def _review_callbacks(self, table, scene_id):
+        """A supervisor can act on a scene straight from the notes dialog.
+        Only from their own queue, which by definition holds nothing but the
+        scenes they have claimed for review."""
+        if table is self.my_queue_table:
+            return {
+                'on_approve':   lambda comment: self._do_approve(scene_id, comment),
+                'on_kick_back': lambda comment: self._do_kick_back(scene_id, comment),
+            }
+        return {}
 
     def _do_approve(self, scene_id, comment=None):
         ok = self._run_db_action(
@@ -436,15 +405,12 @@ class SupervisorDashboard(Dashboard):
             QMessageBox.information(self, "Approved", "Scene approved.")
 
     def handle_kick_back(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
+        """Kick Back opens the notes dialog rather than acting immediately, so
+        the supervisor can leave a comment first. _review_callbacks() supplies
+        its Approve/Kick Back buttons."""
+        if self._my_queue_scene_id() is None:
             return
-        scene_name = self._scene_name_from(self.my_queue_table)
-        self._show_notes(
-            scene_id, scene_name,
-            on_approve=lambda comment: self._do_approve(scene_id, comment),
-            on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
-        )
+        self.act_notes(self.my_queue_table)
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()
@@ -476,35 +442,6 @@ class SupervisorDashboard(Dashboard):
         if ok:
             QMessageBox.information(self, "Released", "Scene returned to supervisor pool.")
 
-    def handle_my_queue_open_roi(self):
-        scene_id = self.selected_id(self.my_queue_table)
-        if scene_id is not None:
-            super().handle_open_roi(scene_id)
-
-    def handle_my_queue_open_notebook(self):
-        scene_id = self.selected_id(self.my_queue_table)
-        if scene_id is not None:
-            super().handle_open_notebook(scene_id)
-
-    def handle_my_queue_see_notes(self):
-        scene_id = self.selected_id(self.my_queue_table)
-        if scene_id is not None:
-            self._show_notes(
-                scene_id, self._scene_name_from(self.my_queue_table),
-                on_approve=lambda comment: self._do_approve(scene_id, comment),
-                on_kick_back=lambda comment: self._do_kick_back(scene_id, comment),
-            )
-
-    def handle_my_queue_see_science_notes(self):
-        scene_id = self.selected_id(self.my_queue_table)
-        if scene_id is not None:
-            self._show_science_notes(scene_id, self._scene_name_from(self.my_queue_table))
-
-    def handle_my_queue_flag(self):
-        scene_id = self.selected_id(self.my_queue_table)
-        if scene_id is not None:
-            self.handle_flag_scene(scene_id, self._scene_name_from(self.my_queue_table))
-
     # ── Supervisor Pool handlers ──────────────────────────────────────────
 
     def handle_claim(self):
@@ -533,84 +470,7 @@ class SupervisorDashboard(Dashboard):
         else:
             QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
 
-    def handle_pool_open_roi(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is not None:
-            super().handle_open_roi(scene_id)
-
-    def handle_pool_open_notebook(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is not None:
-            super().handle_open_notebook(scene_id)
-
-    def handle_pool_see_notes(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is not None:
-            self._show_notes(scene_id, self._scene_name_from(self.pool_table))
-
-    def handle_pool_see_science_notes(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is not None:
-            self._show_science_notes(scene_id, self._scene_name_from(self.pool_table))
-
-    def handle_pool_flag(self):
-        scene_id = self.selected_id(self.pool_table)
-        if scene_id is not None:
-            self.handle_flag_scene(scene_id, self._scene_name_from(self.pool_table))
-
-    # ── In Progress handlers ──────────────────────────────────────────────
-
-    def handle_in_progress_open_roi(self):
-        scene_id = self.selected_id(self.in_progress_table)
-        if scene_id is not None:
-            super().handle_open_roi(scene_id)
-
-    def handle_in_progress_open_notebook(self):
-        scene_id = self.selected_id(self.in_progress_table)
-        if scene_id is not None:
-            super().handle_open_notebook(scene_id)
-
-    def handle_in_progress_see_notes(self):
-        scene_id = self.selected_id(self.in_progress_table)
-        if scene_id is not None:
-            self._show_notes(scene_id, self._scene_name_from(self.in_progress_table))
-
-    def handle_in_progress_see_science_notes(self):
-        scene_id = self.selected_id(self.in_progress_table)
-        if scene_id is not None:
-            self._show_science_notes(scene_id, self._scene_name_from(self.in_progress_table))
-
-    def handle_in_progress_flag(self):
-        scene_id = self.selected_id(self.in_progress_table)
-        if scene_id is not None:
-            self.handle_flag_scene(scene_id, self._scene_name_from(self.in_progress_table))
-
     # ── Master list handlers ──────────────────────────────────────────────
-
-    def handle_master_open_roi(self):
-        scene_id = self.selected_id(self.master_table)
-        if scene_id is not None:
-            super().handle_open_roi(scene_id)
-
-    def handle_master_open_notebook(self):
-        scene_id = self.selected_id(self.master_table)
-        if scene_id is not None:
-            super().handle_open_notebook(scene_id)
-
-    def handle_master_see_notes(self):
-        scene_id = self.selected_id(self.master_table)
-        if scene_id is not None:
-            self._show_notes(scene_id, self._scene_name_from(self.master_table))
-
-    def handle_master_see_science_notes(self):
-        scene_id = self.selected_id(self.master_table)
-        if scene_id is not None:
-            self._show_science_notes(scene_id, self._scene_name_from(self.master_table))
-
-    def handle_master_flag(self):
-        scene_id = self.selected_id(self.master_table)
-        if scene_id is not None:
-            self.handle_flag_scene(scene_id, self._scene_name_from(self.master_table))
 
     def handle_edit_scene(self):
         scene_id = self.selected_id(self.master_table)
