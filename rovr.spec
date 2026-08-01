@@ -36,6 +36,7 @@ a = Analysis(
         'matplotlib.figure',
         'matplotlib.backends.backend_qtagg',
         'matplotlib.backends.backend_agg',
+        'matplotlib.backends.backend_pdf',   # summary slides render to PDF
     ],
     hookspath=[],
     hooksconfig={},

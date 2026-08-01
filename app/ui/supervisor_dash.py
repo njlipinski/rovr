@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
+    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS, REVIEW_BUTTONS,
     make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -206,14 +206,19 @@ class SupervisorDashboard(Dashboard):
         refresh_button.clicked.connect(self.refresh_task_list)
 
         tray_bar = self.make_tray_bar([
+            # REVIEW_BUTTONS rather than SCENE_BUTTONS: every scene here is
+            # claimed for review, so its notes button is "Review Scene" and
+            # carries Approve/Kick Back. See ADR-022.
+            # 'summary_slide' leads: it is the fastest way to see a scene's
+            # ROIs, spectra and metadata, and is meant to be reached before
+            # anyone waits on ROI Studio to start.
             (self.my_queue_table, "My Work Queue",
              [("Approve",        "handle_approve"),
-              ("Kick Back",      "handle_kick_back"),
               ("Mark Bad Scene", "handle_mark_bad_scene"),
               ("Release",        "handle_release"),
-              *SCENE_BUTTONS]),
+              'summary_slide', *REVIEW_BUTTONS]),
             (self.pool_table, "Supervisor Pool",
-             [("Claim", "handle_claim"), *SCENE_BUTTONS]),
+             [("Claim", "handle_claim"), 'summary_slide', *SCENE_BUTTONS]),
             (self.in_progress_table, "In Progress", SCENE_BUTTONS),
             (self.master_table, "All Scenes",
              [*SCENE_BUTTONS,
@@ -329,28 +334,26 @@ class SupervisorDashboard(Dashboard):
         """Mirror the just-approved scene's .fits file into PANCAM_PATH/ready_for_asdf.
         The approval itself has already been recorded in the DB by this point, so a
         copy problem (missing file, network hiccup) is surfaced as a warning rather
-        than rolled back or allowed to block the workflow."""
+        than rolled back or allowed to block the workflow.
+
+        Returns a description of the problem, or None if the copy succeeded. The
+        caller decides how to show it — one dialog for a single approval, or one
+        combined dialog for a batch, rather than a dialog per scene."""
         scene = get_scene_by_id(self.conn, scene_id)
         if scene is None:
-            return
+            return None
         fits_path = find_fits_file(PANCAM_PATH, scene)
         if not fits_path:
-            QMessageBox.warning(
-                self, "FITS Not Copied",
-                f"'{scene['name']}' was approved, but no .fits file could be found "
-                "to copy to ready_for_asdf."
-            )
-            return
+            return (f"'{scene['name']}' was approved, but no .fits file could be "
+                    "found to copy to ready_for_asdf.")
         try:
             dest_dir = os.path.join(PANCAM_PATH, "ready_for_asdf")
             os.makedirs(dest_dir, exist_ok=True)
             shutil.copy2(fits_path, os.path.join(dest_dir, os.path.basename(fits_path)))
         except OSError as e:
-            QMessageBox.warning(
-                self, "FITS Not Copied",
-                f"'{scene['name']}' was approved, but its .fits file could not be "
-                f"copied to ready_for_asdf:\n{e}"
-            )
+            return (f"'{scene['name']}' was approved, but its .fits file could not "
+                    f"be copied to ready_for_asdf:\n{e}")
+        return None
 
     def _do_kick_back(self, scene_id, comment=None):
         ok = self._run_db_action(
@@ -363,19 +366,26 @@ class SupervisorDashboard(Dashboard):
         return ok
 
     def handle_approve(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
-        if self._do_approve(scene_id):
-            QMessageBox.information(self, "Approved", "Scene approved.")
+        """Approve every selected scene. The .fits copy runs per scene but its
+        failures are pooled into one dialog afterwards — approving a batch
+        should not mean dismissing a warning for each file that's missing."""
+        fits_problems = []
 
-    def handle_kick_back(self):
-        """Kick Back opens the notes dialog rather than acting immediately, so
-        the supervisor can leave a comment first. _review_callbacks() supplies
-        its Approve/Kick Back buttons."""
-        if self._my_queue_scene_id() is None:
-            return
-        self.act_notes(self.my_queue_table)
+        def _approve(scene_id):
+            supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
+            problem = self._copy_fits_to_ready_for_asdf(scene_id)
+            if problem:
+                fits_problems.append(problem)
+
+        self.run_bulk_action(
+            self.my_queue_table, _approve, "Approve",
+            done_msg="{done} scene(s) approved.",
+            none_msg="None of the selected scenes could be approved.",
+            partial_msg="{done} scene(s) approved; {skipped} were no longer eligible.",
+            confirm_msg="Approve {n} scenes?\n\nThis cannot be undone.",
+        )
+        if fits_problems:
+            QMessageBox.warning(self, "FITS Not Copied", "\n\n".join(fits_problems))
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()
@@ -397,43 +407,26 @@ class SupervisorDashboard(Dashboard):
             QMessageBox.information(self, "Marked", "Scene marked as having issues.")
 
     def handle_release(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
-        ok = self._run_db_action(
-            lambda: release_supervisor_review(self.conn, scene_id, self.user['id']), "Release Failed"
+        self.run_bulk_action(
+            self.my_queue_table,
+            lambda sid: release_supervisor_review(self.conn, sid, self.user['id']),
+            "Release",
+            done_msg="{done} scene(s) returned to the supervisor pool.",
+            none_msg="None of the selected scenes could be released.",
+            partial_msg="{done} scene(s) released; {skipped} were no longer eligible.",
         )
-        self.refresh_task_list()
-        if ok:
-            QMessageBox.information(self, "Released", "Scene returned to supervisor pool.")
 
     # ── Supervisor Pool handlers ──────────────────────────────────────────
 
     def handle_claim(self):
-        scene_ids = self.selected_ids(self.pool_table)
-        if not scene_ids:
-            return
-        claimed, skipped = 0, 0
-        def _claim_all():
-            nonlocal claimed, skipped
-            for scene_id in scene_ids:
-                try:
-                    if claim_for_supervisor_review(self.conn, scene_id, self.user['id']):
-                        claimed += 1
-                    else:
-                        skipped += 1
-                except ValueError:
-                    skipped += 1
-        if not self._run_db_action(_claim_all, "Claim Failed"):
-            self.refresh_task_list()
-            return
-        self.refresh_task_list()
-        if skipped == 0:
-            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
-        elif claimed == 0:
-            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
-        else:
-            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
+        self.run_bulk_action(
+            self.pool_table,
+            lambda sid: claim_for_supervisor_review(self.conn, sid, self.user['id']),
+            "Claim",
+            done_msg="{done} scene(s) claimed and added to your work queue.",
+            none_msg="None of the selected scenes are still available.",
+            partial_msg="{done} scene(s) claimed; {skipped} were no longer available.",
+        )
 
     # ── Master list handlers ──────────────────────────────────────────────
 

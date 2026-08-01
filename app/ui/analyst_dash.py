@@ -11,7 +11,7 @@ from app.local_settings import get_all_scene_viewed_times, get_dark_mode
 from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
 from app.db import (
     get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress,
-    get_analyst_completed, get_all_scenes,
+    get_analyst_completed, get_all_scenes, get_scene_by_id,
 )
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
@@ -31,9 +31,10 @@ _MY_QUEUE_BUTTONS = {
     ],
     SceneStatus.IN_REVIEW: [
         'open_roi', 'open_notebook',
-        ("Approve",   "handle_approve"),
-        ("Kick Back", "handle_kick_back"),
-        'notes', 'science_notes', 'flag',
+        ("Approve", "handle_approve"),
+        # 'review' opens the notes dialog with Approve/Kick Back wired up, so
+        # there is no separate Kick Back button here. See ADR-022.
+        'review', 'science_notes', 'flag',
         ("Release", "handle_release"),
     ],
     SceneStatus.NEEDS_REVISION: [
@@ -254,15 +255,37 @@ class AnalystDashboard(Dashboard):
         return scene_id
 
     def handle_submit(self):
+        """Submit a scene the analyst owns. A submission from status 4 lands in
+        supervisor review directly (status 6 if a supervisor is already
+        attached, else the status-5 pool), so the summary slide is built here
+        too — see _build_slide_if_supervisor_bound."""
         scene_id = self._my_queue_scene_id()
         if scene_id is None:
             return
         ok = self._run_db_action(
             lambda: submit_scene(self.conn, scene_id, self.user['id']), "Submit Failed"
         )
+        problem = self._build_slide_if_supervisor_bound(scene_id) if ok else None
         self.refresh_task_list()
         if ok:
             QMessageBox.information(self, "Submitted", "Scene submitted.")
+        if problem:
+            QMessageBox.warning(self, "Summary Slide Not Built", problem)
+
+    def _build_slide_if_supervisor_bound(self, scene_id):
+        """Build the summary slide if this scene has just moved into supervisor
+        review, either into the pool (5) or straight into a supervisor's queue
+        (4 → 6 on resubmission, ADR-015).
+
+        Generating on the way in rather than when a supervisor claims the scene
+        is deliberate: the cost lands on the analyst who is already waiting on
+        a dialog, and the supervisor's Summary Slide button opens a file that
+        is already there. Its freshness check covers anything that changed in
+        between."""
+        scene = get_scene_by_id(self.conn, scene_id)
+        if scene is None or scene['status'] not in SceneStatus.SUPERVISOR_BOUND:
+            return None
+        return self.generate_summary_slide(scene_id)
 
     def _do_approve(self, scene_id, comment=None):
         """Peer reviewer approves a status-3 scene → status 5."""
@@ -270,7 +293,10 @@ class AnalystDashboard(Dashboard):
             lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
         )
+        problem = self._build_slide_if_supervisor_bound(scene_id) if ok else None
         self.refresh_task_list()
+        if problem:
+            QMessageBox.warning(self, "Summary Slide Not Built", problem)
         return ok
 
     def _do_kick_back(self, scene_id, comment=None):
@@ -283,82 +309,60 @@ class AnalystDashboard(Dashboard):
         return ok
 
     def handle_approve(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
-        if self._do_approve(scene_id):
-            QMessageBox.information(self, "Approved", "Scene approved and sent to supervisor.")
+        """Approve every selected status-3 scene. My Work Queue mixes statuses
+        1/3/4, so anything not in peer review is reported as skipped rather
+        than blocking the rest of the batch.
 
-    def handle_kick_back(self):
-        """Kick Back opens the notes dialog rather than acting immediately, so
-        the reviewer can leave a comment first. _review_callbacks() supplies
-        its Approve/Kick Back buttons."""
-        if self._my_queue_scene_id() is None:
-            return
-        self.act_notes(self.my_queue_table)
+        Slide generation runs per scene but its failures are pooled into one
+        dialog afterwards — approving a batch should not mean dismissing a
+        warning per scene."""
+        slide_problems = []
+
+        def _approve(scene_id):
+            peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
+            problem = self._build_slide_if_supervisor_bound(scene_id)
+            if problem:
+                slide_problems.append(problem)
+
+        self.run_bulk_action(
+            self.my_queue_table, _approve, "Approve",
+            done_msg="{done} scene(s) approved and sent to supervisor.",
+            none_msg="None of the selected scenes could be approved.",
+            partial_msg="{done} scene(s) approved; {skipped} were no longer eligible.",
+            confirm_msg="Approve {n} scenes?\n\nThis cannot be undone.",
+        )
+        if slide_problems:
+            QMessageBox.warning(self, "Summary Slides Not Built", "\n\n".join(slide_problems))
 
     def handle_release(self):
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
-        ok = self._run_db_action(
-            lambda: release_scene_to_pool(self.conn, scene_id, self.user['id']), "Release Failed"
+        self.run_bulk_action(
+            self.my_queue_table,
+            lambda sid: release_scene_to_pool(self.conn, sid, self.user['id']),
+            "Release",
+            done_msg="{done} scene(s) released back to the pool.",
+            none_msg="None of the selected scenes could be released.",
+            partial_msg="{done} scene(s) released; {skipped} were no longer eligible.",
         )
-        self.refresh_task_list()
-        if ok:
-            QMessageBox.information(self, "Released", "Scene released back to pool.")
 
     # ── Pool / review queue handlers ────────────────────────────────────
 
     def handle_claim_from_pool(self):
-        scene_ids = self.selected_ids(self.scene_pool_table)
-        if not scene_ids:
-            return
-        claimed, skipped = 0, 0
-        def _claim_all():
-            nonlocal claimed, skipped
-            for scene_id in scene_ids:
-                try:
-                    if claim_from_pool(self.conn, scene_id, self.user['id']):
-                        claimed += 1
-                    else:
-                        skipped += 1
-                except ValueError:
-                    skipped += 1
-        if not self._run_db_action(_claim_all, "Claim Failed"):
-            self.refresh_task_list()
-            return
-        self.refresh_task_list()
-        if skipped == 0:
-            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed and added to your work queue.")
-        elif claimed == 0:
-            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
-        else:
-            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
+        self.run_bulk_action(
+            self.scene_pool_table,
+            lambda sid: claim_from_pool(self.conn, sid, self.user['id']),
+            "Claim",
+            done_msg="{done} scene(s) claimed and added to your work queue.",
+            none_msg="None of the selected scenes are still available.",
+            partial_msg="{done} scene(s) claimed; {skipped} were no longer available.",
+        )
 
     def handle_claim_for_review(self):
-        scene_ids = self.selected_ids(self.review_queue_table)
-        if not scene_ids:
-            return
-        claimed, skipped = 0, 0
-        def _claim_all():
-            nonlocal claimed, skipped
-            for scene_id in scene_ids:
-                try:
-                    if claim_scene_for_review(self.conn, scene_id, self.user['id']):
-                        claimed += 1
-                    else:
-                        skipped += 1
-                except ValueError:
-                    skipped += 1
-        if not self._run_db_action(_claim_all, "Claim Failed"):
-            self.refresh_task_list()
-            return
-        self.refresh_task_list()
-        if skipped == 0:
-            QMessageBox.information(self, "Claimed", f"{claimed} scene(s) claimed for peer review.")
-        elif claimed == 0:
-            QMessageBox.warning(self, "Claim Failed", "None of the selected scenes are still available.")
-        else:
-            QMessageBox.information(self, "Partially Claimed", f"{claimed} scene(s) claimed; {skipped} were no longer available.")
+        self.run_bulk_action(
+            self.review_queue_table,
+            lambda sid: claim_scene_for_review(self.conn, sid, self.user['id']),
+            "Claim",
+            done_msg="{done} scene(s) claimed for peer review.",
+            none_msg="None of the selected scenes are still available.",
+            partial_msg="{done} scene(s) claimed; {skipped} were no longer available.",
+        )
 

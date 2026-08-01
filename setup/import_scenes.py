@@ -35,8 +35,15 @@ Migration utility 2: --rename-folders
             and <NAME> is the name of the scene in the database)
     any _v# version tags appended to the end of a folder are preserved in the folder name,
     and the FITS file will still omit the version tag.
-    the v# between SEQID and PMA is SEQ_VER, and is found in the database.  
+    the v# between SEQID and PMA is SEQ_VER, and is found in the database.
     The <NAME> is also found in the database, and is the name of the scene.
+    The .png panels ROI Studio writes beside the FITS are renamed along with it.
+
+Migration utility 3: --fix-panel-names
+    Repairs folders that an earlier --rename-folders run left half-migrated: it
+    renamed the folder and its .fits/.sel but not the .png panels beside them,
+    so those images still carry the pre-migration stem. Renames any panel whose
+    stem doesn't match its folder. Safe to re-run.
 
 Backup utility: --backup
     Creates a backup of the database file and the 'working' directories for
@@ -64,6 +71,9 @@ Usage:
     python setup/import_scenes.py --rename-folders
     python setup/import_scenes.py --rename-folders --dry-run
 
+    python setup/import_scenes.py --fix-panel-names
+    python setup/import_scenes.py --fix-panel-names --dry-run
+
     python setup/import_scenes.py --wipe
 
     python setup/import_scenes.py --copy-approved
@@ -85,7 +95,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import get_db_connection, initialize_db
 from app.models import SceneStatus
-from app.paths import FolderKind, sol_dir_name, find_fits_file
+from app.paths import FolderKind, Panel, sol_dir_name, find_fits_file, versionless_name
 
 try:
     from config import PANCAM_PATH, DB_PATH
@@ -624,11 +634,25 @@ def rename_folders(conn, pancam_root, dry_run=False):
                 print(f"  {label}{folder.name} -> {new_folder_name}")
 
                 if not dry_run:
-                    for ext in (".fits", ".sel"):
+                    # The .png panels ROI Studio saves alongside the .fits/.sel
+                    # follow the same stem and have to move with it — leaving
+                    # them behind is what stranded older folders' images under
+                    # a name that no longer matches anything (see
+                    # --fix-panel-names, which repairs those).
+                    #
+                    # Renaming the files bumps this folder's own mtime, which
+                    # is what Explorer sorts by, so it is captured first and
+                    # put back after the folder itself moves.
+                    folder_stat = folder.stat()
+                    for ext in (".fits", ".sel") + Panel.ALL:
                         old_file = folder / (versionless + ext)
                         if old_file.exists():
-                            old_file.rename(folder / (new_versionless + ext))
+                            st = old_file.stat()
+                            new_file = folder / (new_versionless + ext)
+                            old_file.rename(new_file)
+                            os.utime(new_file, (st.st_atime, st.st_mtime))
                     folder.rename(new_folder_path)
+                    os.utime(new_folder_path, (folder_stat.st_atime, folder_stat.st_mtime))
 
                 renamed += 1
 
@@ -636,6 +660,89 @@ def rename_folders(conn, pancam_root, dry_run=False):
             f"{rover}: {renamed} renamed, {skipped_not_old} already migrated / not old format, "
             f"{skipped_no_match} no DB match, {skipped_ambiguous} ambiguous, "
             f"{skipped_conflict} conflicts\n"
+        )
+
+
+def fix_panel_names(pancam_root, dry_run=False):
+    """Rename ROI Studio's .png panels to match the folder they sit in.
+
+    --rename-folders originally moved only the .fits/.sel when it renamed a
+    folder, so every folder it touched still holds images under the
+    pre-migration stem — e.g. Sol0007_p2530_PMA791_left_dcs.png inside
+    Sol0007_p2530v1_PMA791_pancam_magic_carpet. Those folders look already
+    migrated to --rename-folders and are skipped by it, so they need this pass.
+
+    Only files ending in one of the known panel suffixes are considered, and a
+    file is renamed only if its stem differs from the folder's own
+    (revision-tag-stripped) name. Anything prefixed OLD_ is left alone -- those
+    are deliberate archives, not stragglers -- and a rename whose destination
+    already exists is skipped rather than overwriting it.
+    """
+    pancam_path = Path(pancam_root)
+
+    for rover in ["MERA", "MERB"]:
+        rover_root = pancam_path / rover
+        if not rover_root.exists():
+            print(f"Skipping {rover}: {rover_root} does not exist.")
+            continue
+
+        sol_dirs = sorted(
+            d for d in rover_root.iterdir()
+            if d.is_dir() and _sol_num(d.name) is not None
+        )
+
+        renamed = already = skipped_conflict = skipped_archive = 0
+
+        for sol_dir in sol_dirs:
+            working_dir = sol_dir / FolderKind.WORKING
+            if not working_dir.exists():
+                continue
+
+            for folder in sorted(d for d in working_dir.iterdir() if d.is_dir()):
+                stem = versionless_name(folder.name)
+                # Renaming a file updates its *directory's* mtime, which is what
+                # Explorer sorts "Date modified" by. Left alone, a repair pass
+                # floats every touched folder to the top of the listing and can
+                # invert which revision looks newest. Restored below.
+                folder_stat = folder.stat()
+                folder_touched = False
+                for f in sorted(p for p in folder.iterdir() if p.is_file()):
+                    suffix = next((s for s in Panel.ALL if f.name.lower().endswith(s.lower())), None)
+                    if suffix is None:
+                        continue
+                    if f.name.startswith("OLD_"):
+                        skipped_archive += 1
+                        continue
+                    if f.name == stem + suffix:
+                        already += 1
+                        continue
+                    target = folder / (stem + suffix)
+                    if target.exists():
+                        print(f"  SKIP {f} -> {target.name} (destination already exists)")
+                        skipped_conflict += 1
+                        continue
+                    label = "[dry run] " if dry_run else ""
+                    print(f"  {label}{folder.name}/{f.name} -> {target.name}")
+                    if not dry_run:
+                        # Carry the original timestamps across explicitly. A
+                        # rename preserves mtime on every filesystem this has
+                        # been tried on, but these files are the inputs
+                        # slide_is_current() compares a slide against, and a
+                        # bulk re-stamp to "now" would silently mark every
+                        # scene's panels newer than its slide. Too cheap not to
+                        # guarantee outright.
+                        st = f.stat()
+                        f.rename(target)
+                        os.utime(target, (st.st_atime, st.st_mtime))
+                        folder_touched = True
+                    renamed += 1
+
+                if folder_touched:
+                    os.utime(folder, (folder_stat.st_atime, folder_stat.st_mtime))
+
+        print(
+            f"{rover}: {renamed} panel(s) renamed, {already} already correct, "
+            f"{skipped_conflict} conflicts, {skipped_archive} OLD_ archives left alone\n"
         )
 
 
@@ -778,7 +885,7 @@ def main():
         "--path",
         default=PANCAM_PATH,
         help="Root Pancam folder containing MERA/ and MERB/ subdirectories "
-             "(defaults to PANCAM_PATH in config.py)",
+            "(defaults to PANCAM_PATH in config.py)",
     )
     parser.add_argument(
         "--csv",
@@ -805,14 +912,21 @@ def main():
         "--restructure-folders",
         action="store_true",
         help="One-off migration: move rover/<kind>/solNNNN into rover/NNNN/<kind> "
-             "for kind in iof, edr, practice, working.",
+            "for kind in iof, edr, practice, working.",
     )
     parser.add_argument(
         "--rename-folders",
         action="store_true",
         help="One-off migration: rename working/ ROI folders (and their .fits/.sel "
-             "files) from Sol####_p####[v#]_PMA# to Sol####_p####v#_PMA#_<NAME>, "
-             "using SEQ_VER and NAME from the matching DB scene.",
+            "files) from Sol####_p####[v#]_PMA# to Sol####_p####v#_PMA#_<NAME>, "
+            "using SEQ_VER and NAME from the matching DB scene.",
+    )
+    parser.add_argument(
+        "--fix-panel-names",
+        action="store_true",
+        help="Rename ROI Studio .png panels to match the folder they sit in, "
+            "repairing folders whose images were left behind by an earlier "
+            "--rename-folders run.",
     )
     parser.add_argument(
         "--wipe",
@@ -865,6 +979,16 @@ def main():
             rename_folders(conn, args.path, dry_run=args.dry_run)
         finally:
             conn.close()
+        return
+
+    if args.fix_panel_names:
+        if not args.path:
+            print("Error: --fix-panel-names requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not Path(args.path).exists():
+            print(f"Error: '{args.path}' does not exist.")
+            sys.exit(1)
+        fix_panel_names(args.path, dry_run=args.dry_run)
         return
 
     if args.backup:

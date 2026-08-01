@@ -14,7 +14,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
 from app.models import SceneStatus, SceneFlag, Role
-from app.paths import FolderKind, kind_path, find_sel_file, find_fits_file
+from app.paths import (
+    FolderKind, kind_path, find_sel_file, find_fits_file,
+    find_scene_folder, summary_slide_paths,
+)
+from app.slides import build_summary_slide, slide_is_current
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
     get_column_widths, set_column_widths,
@@ -201,12 +205,20 @@ SCENE_ACTIONS = {
     'open_roi':      ("Open in ROI Studio", 'act_open_roi'),
     'open_notebook': ("Open in Notebook",   'act_open_notebook'),
     'notes':         ("See Notes",          'act_notes'),
+    # Same action and same dialog as 'notes'. In a reviewable context that
+    # dialog also carries Approve/Kick Back (via _review_callbacks), so the
+    # button is labelled for what it is there — reviewing, not just reading.
+    'review':        ("Review Scene",       'act_notes'),
     'science_notes': ("Science Notes",      'act_science_notes'),
     'flag':          ("Flag Scene",         'act_flag'),
+    'summary_slide': ("Summary Slide",      'act_summary_slide'),
 }
 
 # The full set, in the order it should appear in a tray.
 SCENE_BUTTONS = ('open_roi', 'open_notebook', 'notes', 'science_notes', 'flag')
+
+# The same set for a table whose selected scene can be acted on.
+REVIEW_BUTTONS = ('open_roi', 'open_notebook', 'review', 'science_notes', 'flag')
 
 
 def make_section(label_text, table, tray=None, count_fn=None):
@@ -414,14 +426,18 @@ class NotesDialog(SizePersistentDialog):
                 format_row=_format_thread_row, add_note_fn=add_note,
                 update_note_fn=update_note, delete_note_fn=delete_note,
                 is_supervisor=False, on_approve=None, on_kick_back=None,
-                on_open_roi=None):
+                on_open_roi=None, on_summary_slide=None):
         """on_approve/on_kick_back, if given, are callables (comment: str | None) -> bool
         (True on success). When set, the dialog shows an Approve/Kick Back button that
         sends the current note-box text as the review comment and closes the dialog on
         success, so a reviewer can leave a note and act on it without a second dialog.
 
         on_open_roi, if given, is a callable () -> None that launches ROI Studio for
-        this scene, so a reviewer can jump to ROI Studio without closing the note thread."""
+        this scene, so a reviewer can jump to ROI Studio without closing the note thread.
+
+        on_summary_slide, if given, is a callable () -> None that opens this scene's
+        summary slide — the fast way to see the ROIs, spectra and metadata without
+        waiting for ROI Studio to start."""
         super().__init__(parent)
         self.conn = conn
         self.scene_id = scene_id
@@ -435,6 +451,7 @@ class NotesDialog(SizePersistentDialog):
         self._on_approve = on_approve
         self._on_kick_back = on_kick_back
         self._on_open_roi = on_open_roi
+        self._on_summary_slide = on_summary_slide
         self.setWindowTitle(f"{title} — {scene_name}")
         self.setMinimumSize(520, 440)
         self._restore_size()
@@ -473,6 +490,10 @@ class NotesDialog(SizePersistentDialog):
             open_roi_btn = QPushButton("Open in ROI Studio")
             open_roi_btn.clicked.connect(self._on_open_roi)
             btn_layout.addWidget(open_roi_btn)
+        if self._on_summary_slide is not None:
+            slide_btn = QPushButton("Summary Slide")
+            slide_btn.clicked.connect(self._on_summary_slide)
+            btn_layout.addWidget(slide_btn)
         copy_id_btn = QPushButton("Copy Scene ID")
         copy_id_btn.clicked.connect(self._on_copy_scene_id)
         btn_layout.addWidget(copy_id_btn)
@@ -1205,6 +1226,63 @@ class Dashboard(QMainWindow):
                 raise
         return False
 
+    def run_bulk_action(self, table, action, title, *,
+                        done_msg, none_msg, partial_msg, confirm_msg=None):
+        """Apply `action(scene_id)` to every selected row in `table`.
+
+        Each scene is written independently, so one that is no longer eligible
+        — someone else claimed it, or its status moved on since the rows were
+        drawn — raises ValueError from `controller.py` and is counted as
+        skipped instead of aborting the batch. An `action` that returns False
+        counts as skipped too, for controller functions that report failure
+        that way rather than raising. Lock contention is different: it means
+        nothing further can be written, so `_run_db_action` stops the run and
+        shows its own dialog.
+
+        `done_msg`/`none_msg`/`partial_msg` are format strings taking {done}
+        and {skipped}. `confirm_msg` (taking {n}) is shown as a Yes/Cancel
+        prompt first, but only when more than one row is selected — bulk
+        actions that can't be undone ask; single-scene ones stay one click.
+
+        Returns the number of scenes acted on.
+        """
+        scene_ids = self.selected_ids(table)
+        if not scene_ids:
+            return 0
+        if confirm_msg and len(scene_ids) > 1:
+            answer = QMessageBox.question(
+                self, title, confirm_msg.format(n=len(scene_ids)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return 0
+
+        done = skipped = 0
+
+        def _run_all():
+            nonlocal done, skipped
+            for scene_id in scene_ids:
+                try:
+                    if action(scene_id) is False:
+                        skipped += 1
+                    else:
+                        done += 1
+                except ValueError:
+                    skipped += 1
+
+        ok = self._run_db_action(_run_all, f"{title} Failed")
+        self.refresh_task_list()
+        if not ok:
+            return done
+        if skipped == 0:
+            QMessageBox.information(self, title, done_msg.format(done=done, skipped=skipped))
+        elif done == 0:
+            QMessageBox.warning(self, f"{title} Failed", none_msg.format(done=done, skipped=skipped))
+        else:
+            QMessageBox.information(self, f"Partially {title}d",
+                                    partial_msg.format(done=done, skipped=skipped))
+        return done
+
     def _fill_table(self, table, rows, fill_fn):
         """Populate a table safely: disables sorting during insert to prevent mid-fill reorders."""
         table.setSortingEnabled(False)
@@ -1532,6 +1610,65 @@ class Dashboard(QMainWindow):
         if scene_id is not None:
             self.handle_flag_scene(scene_id, self._scene_name_from(table))
 
+    def act_summary_slide(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is not None:
+            self.handle_open_summary_slide(scene_id)
+
+    # ── Summary slides ──────────────────────────────────────────────────
+
+    def generate_summary_slide(self, scene_id, force=False):
+        """Build a scene's summary slide, skipping the work if the one on disk
+        is already newer than everything it was built from.
+
+        Returns a description of the problem, or None on success. Slides are a
+        convenience layered on top of the workflow, never a precondition for
+        it: this is called after the DB write that moved the scene, so a
+        missing .fits or an unreachable drive is reported, never rolled back
+        and never allowed to block a review. The caller decides how to show it
+        — one dialog for a single scene, one combined dialog for a batch."""
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+        except sqlite3.OperationalError:
+            return None      # the workflow write already succeeded; not worth a second dialog
+        if scene is None:
+            return None
+        try:
+            if not force and slide_is_current(PANCAM_PATH, scene):
+                return None
+            build_summary_slide(PANCAM_PATH, scene)
+        except FileNotFoundError as e:
+            return f"'{scene['name']}': {e}"
+        except (OSError, ValueError) as e:
+            return f"'{scene['name']}': summary slide could not be written:\n{e}"
+        return None
+
+    def handle_open_summary_slide(self, scene_id):
+        """Open a scene's summary slide in the system PDF viewer, rebuilding it
+        first if it is missing or older than the images it summarises.
+
+        Handing the file to the OS rather than rendering it in a Qt window is
+        deliberate: the viewer is already installed, already fast, and gives
+        zoom and page navigation for free — which the ROI metadata table needs
+        and a QLabel would not provide."""
+        problem = self.generate_summary_slide(scene_id)
+        if problem:
+            QMessageBox.warning(self, "Summary Slide Unavailable", problem)
+            return
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+        except sqlite3.OperationalError:
+            scene = None
+        if scene is None:
+            return
+        folder = find_scene_folder(PANCAM_PATH, scene)
+        if not folder:
+            QMessageBox.warning(self, "Summary Slide Unavailable",
+                                f"No saved ROI Studio folder for '{scene['name']}'.")
+            return
+        slide, _master = summary_slide_paths(PANCAM_PATH, scene, folder)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(slide))
+
     def _mark_viewed(self, scene_id):
         """Clear the new-activity highlight after notes have been read, from
         whichever table they were opened from."""
@@ -1544,6 +1681,7 @@ class Dashboard(QMainWindow):
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
             on_approve=on_approve, on_kick_back=on_kick_back,
             on_open_roi=(lambda: self.handle_open_roi(scene_id)),
+            on_summary_slide=(lambda: self.handle_open_summary_slide(scene_id)),
         ).exec()
 
     def _show_science_notes(self, scene_id, scene_name):

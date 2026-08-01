@@ -27,6 +27,13 @@ class SceneStatus:
         8: 'issues',
     }
 
+    # A scene is waiting on a supervisor in either of these: the shared pool
+    # (5), or a supervisor's own queue (6). Both belong here — a resubmission
+    # with a supervisor already attached goes straight to 6 and never passes
+    # through 5 (ADR-015), so treating 5 alone as "supervisor-bound" would miss
+    # exactly the case where a scene has just been redrawn.
+    SUPERVISOR_BOUND = (PENDING_SUPERVISOR, IN_SUPERVISOR_REVIEW)
+
 
 class SceneFlag:
     OTHER       = 0
