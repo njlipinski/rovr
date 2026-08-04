@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
-    QApplication, QTabWidget,
+    QApplication, QTabWidget, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
@@ -29,7 +29,7 @@ from app.local_settings import (
 )
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme
 
-# Preset options shown in the ☰ → UI Scale menu. Applied via QT_SCALE_FACTOR
+# Preset options shown in the ☰ -> UI Scale menu. Applied via QT_SCALE_FACTOR
 # at next launch (Qt reads it once, at startup) — not live.
 UI_SCALE_PRESETS = (1.0, 1.25, 1.5, 1.75, 2.0)
 from app.db import (
@@ -45,7 +45,7 @@ try:
 except ImportError:
     __version__ = "dev"
 
-# Parses 'MERB/sol0003/P2350/obs0' → ('MERB', '0003', 'P2350', '0')
+# Parses 'MERB/sol0003/P2350/obs0' -> ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 
 
@@ -1226,6 +1226,30 @@ class Dashboard(QMainWindow):
                 raise
         return False
 
+    def _run_db_read(self, fn, default=None):
+        """Run fn() (a DB read), returning `default` instead of crashing if the
+        shared database stayed locked for the whole read budget (see
+        db._with_read_retry).
+
+        Reads used to have no handling at all: db.py's retry wrapper covered
+        only writes, and this method's write-side twin above only ever sees
+        controller calls. So a SELECT that lost a race went straight to
+        sys.excepthook -- the "ROVR Error" crash dialog -- which is what every
+        entry in the crash log turned out to be. Reads are safe to abandon and
+        retry later, so this reports and moves on rather than re-raising.
+        """
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e).lower():
+                QMessageBox.warning(
+                    self, "Database Busy",
+                    "The shared database is busy, so this view may be out of date. "
+                    "Press Refresh in a moment to try again."
+                )
+                return default
+            raise
+
     def run_bulk_action(self, table, action, title, *,
                         done_msg, none_msg, partial_msg, confirm_msg=None):
         """Apply `action(scene_id)` to every selected row in `table`.
@@ -1520,12 +1544,20 @@ class Dashboard(QMainWindow):
             )
 
         bar = QWidget()
+        # A plain QWidget is vertically Preferred, which lets it share surplus
+        # window height with the tables above it — the tray grew on resize and
+        # the tables didn't. Fixed pins the bar to its hint (label + tray), so
+        # every extra pixel goes to the tables. The dashboard must also give
+        # its table splitter stretch=1; a horizontal QSplitter is only
+        # vertically Preferred and won't claim that space on its own.
+        bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(bar)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(self.tray_label)
         layout.addWidget(self.shared_tray)
         self.update_shared_tray()
+        self.tray_bar = bar
         return bar
 
     def _on_table_selection_changed(self, table):
@@ -1768,7 +1800,11 @@ class Dashboard(QMainWindow):
         menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _handle_see_stats(self):
-        StatsDialog(self.conn, self.user, self).exec()
+        # StatsDialog reads the whole stats set in its constructor, so the
+        # guard has to wrap construction, not exec().
+        dialog = self._run_db_read(lambda: StatsDialog(self.conn, self.user, self))
+        if dialog is not None:
+            dialog.exec()
 
     def _toggle_dark_mode(self, enabled):
         set_dark_mode(enabled)
@@ -1792,6 +1828,16 @@ class Dashboard(QMainWindow):
         ChangePasswordDialog(self.conn, self.user, self).exec()
 
     def refresh_task_list(self):
+        """Repopulate every table on this dashboard.
+
+        Guarded rather than left to each subclass: this runs automatically
+        after every action, so a locked database here would take the window
+        down for something the user never asked for. Subclasses implement
+        _refresh_tables() and get the handling for free.
+        """
+        self._run_db_read(self._refresh_tables)
+
+    def _refresh_tables(self):
         raise NotImplementedError
 
     def handle_logout(self):

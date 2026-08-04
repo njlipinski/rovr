@@ -1,6 +1,8 @@
 # app/ui/login.py
 """Login window — first screen the user sees"""
 
+import sqlite3
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QMessageBox
@@ -53,7 +55,21 @@ class LoginUI(QWidget):
             QMessageBox.warning(self, "Error", "Please enter a username and password.")
             return
 
-        user = authenticate_user(self.conn, username, password)
+        # LoginUI isn't a Dashboard, so it can't reach _run_db_read — the same
+        # handling is inlined here instead, as it is in the change-username and
+        # change-password dialogs. The user lookup is a read, and a locked
+        # database on it used to reach the crash dialog.
+        try:
+            user = authenticate_user(self.conn, username, password)
+        except sqlite3.OperationalError as e:
+            if 'locked' not in str(e).lower():
+                raise
+            QMessageBox.warning(
+                self, "Database Busy",
+                "The shared database is busy and your login couldn't be checked. "
+                "Please try again in a moment."
+            )
+            return
 
         if user:
             self._open_dashboard(user)

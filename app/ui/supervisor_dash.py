@@ -112,7 +112,7 @@ class EditSceneDialog(SizePersistentDialog):
         return self.notes.toPlainText().strip() or None
 
 
-# Master list columns: header label → field name (None = parsed from scene_key)
+# Master list columns: header label -> field name (None = parsed from scene_key)
 _MASTER_COLS = [
     ("ID",            "id"),
     ("Rover",         None),
@@ -226,7 +226,10 @@ class SupervisorDashboard(Dashboard):
               ("Reset Scene", "handle_reset_scene")]),
         ])
 
-        self.main_content_layout.addWidget(main_splitter)
+        # stretch=1: all surplus window height goes to the tables. A vertical
+        # QSplitter already claims it by policy, but say so explicitly so the
+        # layout doesn't depend on this splitter's orientation staying vertical.
+        self.main_content_layout.addWidget(main_splitter, stretch=1)
         self.main_content_layout.addWidget(tray_bar)
         self.main_content_layout.addWidget(refresh_button)
 
@@ -234,7 +237,7 @@ class SupervisorDashboard(Dashboard):
 
     # ── Populate tables ─────────────────────────────────────────────────
 
-    def refresh_task_list(self):
+    def _refresh_tables(self):
         sup_id = self.user['id']
 
         def fill_my_queue(i, scene):

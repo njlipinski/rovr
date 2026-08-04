@@ -50,17 +50,17 @@ def main():
 
     pending = [m for m in MIGRATIONS if m.id not in applied]
     if not pending:
-        print("All migrations already applied — nothing to do.")
+        print("All migrations already applied. Nothing to do.")
         conn.close()
         return
 
     label = "DRY RUN" if args.dry_run else "Applying"
-    print(f"{label} — {len(pending)} pending migration(s):")
+    print(f"{label}. {len(pending)} pending migration(s):")
 
     for m in pending:
         print(f"\n  [{m.id}]  {m.description}")
         if args.dry_run:
-            print("    DRY RUN — skipped")
+            print("    DRY RUN. Skipped.")
             continue
         m.up(conn)
         conn.execute("INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)", (m.id,))

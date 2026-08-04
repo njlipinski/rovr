@@ -126,7 +126,10 @@ class AnalystDashboard(Dashboard):
             (self.all_scenes_table,   "All Scenes",            SCENE_BUTTONS),
         ])
 
-        self.main_content_layout.addWidget(splitter)
+        # stretch=1: all surplus window height goes to the tables. Without it
+        # the tray bar below shares the growth, since a horizontal QSplitter is
+        # only vertically Preferred.
+        self.main_content_layout.addWidget(splitter, stretch=1)
         self.main_content_layout.addWidget(tray_bar)
         self.main_content_layout.addWidget(refresh_button)
 
@@ -134,7 +137,7 @@ class AnalystDashboard(Dashboard):
 
     # ── Populate tables ─────────────────────────────────────────────────
 
-    def refresh_task_list(self):
+    def _refresh_tables(self):
         analyst_id = self.user['id']
 
         def fill_my_queue(i, scene):
@@ -275,7 +278,7 @@ class AnalystDashboard(Dashboard):
     def _build_slide_if_supervisor_bound(self, scene_id):
         """Build the summary slide if this scene has just moved into supervisor
         review, either into the pool (5) or straight into a supervisor's queue
-        (4 → 6 on resubmission, ADR-015).
+        (4 -> 6 on resubmission, ADR-015).
 
         Generating on the way in rather than when a supervisor claims the scene
         is deliberate: the cost lands on the analyst who is already waiting on
@@ -288,7 +291,7 @@ class AnalystDashboard(Dashboard):
         return self.generate_summary_slide(scene_id)
 
     def _do_approve(self, scene_id, comment=None):
-        """Peer reviewer approves a status-3 scene → status 5."""
+        """Peer reviewer approves a status-3 scene -> status 5."""
         ok = self._run_db_action(
             lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
@@ -300,7 +303,7 @@ class AnalystDashboard(Dashboard):
         return ok
 
     def _do_kick_back(self, scene_id, comment=None):
-        """Peer reviewer kicks back a status-3 scene → status 4 with an optional comment."""
+        """Peer reviewer kicks back a status-3 scene -> status 4 with an optional comment."""
         ok = self._run_db_action(
             lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comment),
             "Kick Back Failed"

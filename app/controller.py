@@ -14,7 +14,7 @@ from app.models import SceneStatus, Decision, Stage, SceneFlag
 
 
 def claim_from_pool(conn, scene_id, analyst_id):
-    """analyst 1 claims an unclaimed scene from the pool (0 → 1)"""
+    """analyst 1 claims an unclaimed scene from the pool (0 -> 1)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene is None:
         raise ValueError(f"Scene {scene_id} not found")
@@ -47,8 +47,8 @@ def submit_scene(conn, scene_id, analyst_id):
 
 
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
-    """analyst 2 reviews a claimed scene (3) — approve → pending supervisor (5),
-    or kick back → needs revision (4)"""
+    """analyst 2 reviews a claimed scene (3) — approve -> pending supervisor (5),
+    or kick back -> needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_REVIEW:
         raise ValueError("Scene is not currently in peer review")
@@ -81,7 +81,7 @@ def mark_scene_issues(conn, scene_id, supervisor_id):
 
 
 def claim_for_supervisor_review(conn, scene_id, supervisor_id):
-    """supervisor claims a scene from the supervisor pool (5 → 6)"""
+    """supervisor claims a scene from the supervisor pool (5 -> 6)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene is None:
         raise ValueError(f"Scene {scene_id} not found")
@@ -91,7 +91,7 @@ def claim_for_supervisor_review(conn, scene_id, supervisor_id):
 
 
 def release_supervisor_review(conn, scene_id, supervisor_id):
-    """supervisor releases their claimed scene back to the supervisor pool (6 → 5)"""
+    """supervisor releases their claimed scene back to the supervisor pool (6 -> 5)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
         raise ValueError("Scene is not in supervisor review")
@@ -101,8 +101,8 @@ def release_supervisor_review(conn, scene_id, supervisor_id):
 
 
 def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
-    """supervisor reviews a claimed scene (6) — approve → approved (7),
-    or kick back → needs revision (4)"""
+    """supervisor reviews a claimed scene (6) — approve -> approved (7),
+    or kick back -> needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
         raise ValueError("Scene is not in supervisor review")
@@ -118,7 +118,7 @@ def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
 
 
 def claim_scene_for_review(conn, scene_id, analyst_id):
-    """analyst 2 claims a scene from the peer review pool (2 → 3)"""
+    """analyst 2 claims a scene from the peer review pool (2 -> 3)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene is None:
         raise ValueError(f"Scene {scene_id} not found")
@@ -130,7 +130,7 @@ def claim_scene_for_review(conn, scene_id, analyst_id):
 
 
 def release_scene_to_pool(conn, scene_id, analyst_id):
-    """analyst releases a claimed scene back to its pool (1 → 0, or 3 → 2)"""
+    """analyst releases a claimed scene back to its pool (1 -> 0, or 3 -> 2)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.IN_REVIEW):
         raise ValueError("Only claimed scenes can be released")

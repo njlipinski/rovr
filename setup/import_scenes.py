@@ -294,16 +294,33 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
 
 # ── CSV importer ──────────────────────────────────────────────────────────────
 
-# Maps (ROVER, SOL, SEQ_ID, obs_ix) → representative dict, one row per unique
+# Filter positions sparc's scan_pcam_files() discards before ordering an
+# observation's frames. Mirrored here so the representative row chosen below is
+# the same frame ROI Studio names its folder after.
+_INVALID_FILTERS = frozenset({'L0', 'L1', 'L8', 'R8'})
+
+
+# Maps (ROVER, SOL, SEQ_ID, obs_ix) -> representative dict, one row per unique
 # scene. Subsequent rows for the same scene (same composite key, different
-# filter/eye) are counted but not stored, EXCEPT: a stereo scene's L-eye and
-# R-eye frames can carry different PMA (the two cameras point at slightly
-# different mast angles for the same observation), and ROI Studio names its
-# working/ folder after whichever frame it saved from — observed to be the
-# L-eye frame. So the L-eye row is preferred as representative whenever one
-# exists, regardless of row order in the CSV, to keep the stored PMA in sync
-# with what ends up in the folder name. Non-stereo rows (no L/R split) keep
-# the previous first-row-wins behavior.
+# filter/eye) are counted but not stored.
+#
+# WHICH row represents the scene matters for one column only: pma. The on-disk
+# ROI Studio working/ folder embeds PMA in its name, and find_scene_folder()
+# rebuilds that name from the stored pma — so a scene whose stored pma differs
+# from the one in its folder name simply has no findable .fits. The two frames
+# of an observation can disagree: PMA comes from ROVER_MOTION_COUNTER[3], and
+# the left and right cameras sit at slightly different mast angles.
+#
+# ROI Studio takes it from the FIRST row of the observation once sorted by
+# SCLK, i.e. the earliest-acquired frame, after discarding non-IOF products and
+# the filters in _INVALID_FILTERS. That is usually a left-eye frame, which is
+# why preferring the L-eye row worked for most scenes — but in observations
+# where the right eye was imaged first it is a right-eye frame, and those
+# scenes became unfindable. So the representative is chosen the same way ROI
+# Studio does rather than by eye. See ADR-026.
+#
+# This mirrors sparc's scan_pcam_files() + load_cube(): if its ordering or
+# filtering changes, this must change with it.
 
 def _scene_dict(key, rover, sol, seq_id, obs_ix, name, row):
     return {
@@ -345,19 +362,17 @@ def _scene_dict(key, rover, sol, seq_id, obs_ix, name, row):
 
 def import_scenes_from_csv(conn, csv_path, dry_run=False):
     """Read a CSV observation table and import one scene per unique
-    (ROVER, SOL, SEQ_ID, obs_ix) group. All 33 CSV columns are stored
-    from one representative row of each group — see _scene_dict's L-eye
-    preference for how that row is picked.
+    (ROVER, SOL, SEQ_ID, obs_ix) group. All 33 CSV columns are stored from
+    one representative row of each group — see the comment above _scene_dict
+    for how that row is picked and why it matters.
 
     For scene_keys that already exist, the rest of the row is left alone
-    (see module docstring — re-running is incremental), except PMA: the
-    on-disk ROI Studio working/ folder embeds PMA in its name, and its
-    stereo pair's L-eye and R-eye rows can carry different PMA (the two
-    cameras point at slightly different mast angles for the same
-    observation) — ROI Studio has been observed to always name its folder
-    after the L-eye frame. If the scene's already-stored pma doesn't match
-    the (now correctly L-eye-preferred) representative row's pma, it's
-    corrected here rather than requiring a full re-import."""
+    (see module docstring — re-running is incremental), except PMA. The
+    on-disk ROI Studio working/ folder embeds PMA in its name and
+    find_scene_folder() rebuilds that name from the stored value, so the two
+    must agree or the scene's .fits becomes unreachable. If the stored pma
+    doesn't match the representative row's, it's corrected here rather than
+    requiring a full re-import."""
 
     path = Path(csv_path)
     if not path.exists():
@@ -369,8 +384,8 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
     existing_pma = {row[0]: (row[1], row[2]) for row in existing_rows}
 
     # First pass — group rows
-    groups = {}          # scene_key → representative row dict
-    group_is_l_eye = {}  # scene_key → whether that representative is an L-eye row
+    groups = {}      # scene_key -> representative row dict
+    group_rank = {}  # scene_key -> that representative's selection rank
     row_counts = {}
     total_rows = 0
 
@@ -388,24 +403,35 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
             name    = row.get('NAME', '').strip()
 
             if not rover or not sol_str or not seq_id:
-                print(f"  Warning: skipping row {total_rows} — missing ROVER/SOL/SEQ_ID")
+                print(f"  Warning: skipping row {total_rows}. Missing ROVER/SOL/SEQ_ID.")
                 continue
 
             sol = _to_int(sol_str)
             if sol is None:
-                print(f"  Warning: skipping row {total_rows} — unparseable SOL '{sol_str}'")
+                print(f"  Warning: skipping row {total_rows}. Unparseable SOL '{sol_str}'.")
                 continue
             if obs_ix is None:
                 obs_ix = 0
 
             key = f"{rover}/sol{sol:04d}/{seq_id}/obs{obs_ix}"
             row_counts[key] = row_counts.get(key, 0) + 1
-            is_l_eye = (row.get('FILTER') or '').strip().upper().startswith('L')
-            if key not in groups or (is_l_eye and not group_is_l_eye[key]):
+            # Rank rows the way sparc orders an observation's frames, so the
+            # representative is the one ROI Studio reads PMA from: usable
+            # frames first, then earliest SCLK. Rows sparc would discard are
+            # kept as a last resort so a scene whose every row is filtered out
+            # still imports rather than vanishing.
+            sclk = _to_int(row.get('SCLK'))
+            usable = (
+                (row.get('PRODUCT_TYPE') or '').strip().upper() == 'IOF'
+                and (row.get('FILTER') or '').strip().upper() not in _INVALID_FILTERS
+                and sclk is not None
+            )
+            rank = (0 if usable else 1, sclk if sclk is not None else float('inf'))
+            if key not in groups or rank < group_rank[key]:
                 groups[key] = _scene_dict(key, rover, sol, seq_id, obs_ix, name, row)
-                group_is_l_eye[key] = is_l_eye
+                group_rank[key] = rank
 
-    print(f"CSV: {total_rows} rows → {len(groups)} unique scenes")
+    print(f"CSV: {total_rows} rows -> {len(groups)} unique scenes")
     print(f"Already in DB: {len(existing)}\n")
 
     new_scenes = [s for s in groups.values() if s['scene_key'] not in existing]
@@ -452,7 +478,7 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
 
     if pma_updates:
         row_label = "[dry run] " if dry_run else ""
-        print(f"\n{len(pma_updates)} scene(s) have a PMA mismatch vs. the CSV — correcting to match CSV:")
+        print(f"\n{len(pma_updates)} scene(s) have a PMA mismatch vs. the CSV. Correcting to match CSV:")
         for key, name, old_pma, new_pma in pma_updates:
             print(f"  {row_label}{name} ({key}): pma {old_pma} -> {new_pma}")
         if not dry_run:

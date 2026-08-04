@@ -45,7 +45,7 @@ class SceneFlag:
 
     @staticmethod
     def parse(s):
-        """Parse '{0,1,2}' → set of ints."""
+        """Parse '{0,1,2}' -> set of ints."""
         s = (s or '{}').strip('{}').strip()
         if not s:
             return set()
@@ -53,7 +53,7 @@ class SceneFlag:
 
     @staticmethod
     def serialize(flags_set):
-        """Serialize set of ints → '{0,1,2}'."""
+        """Serialize set of ints -> '{0,1,2}'."""
         if not flags_set:
             return '{}'
         return '{' + ','.join(str(f) for f in sorted(flags_set)) + '}'
