@@ -11,7 +11,7 @@ The three image panels are not drawn here. ROI Studio writes them beside the
 already on disk. Panels are placed at native pixel size and never cropped or
 enlarged; anything smaller than its cell is centred with margin.
 
-A scene can have anywhere from zero to fifteen or more ROIs, so the metadata
+A scene can have anywhere from zero to fifteen ROIs, so the metadata
 table shrinks to fit and spills onto a second page rather than being truncated.
 
 No Qt and no SQL — a slide is a pure function of a scene row and the Pancam
@@ -74,22 +74,28 @@ _ROW_MIN_PX    = 34
 _SWATCH_PX     = 15
 
 
-def missing_artifacts(folder):
-    """Names of the files a complete save should hold but this folder doesn't.
+def missing_panels(folder):
+    """Captions of the panel images this folder doesn't have.
 
-    A .fits and its panel images are written together by ROI Studio, so one
-    without the others means an interrupted or hand-edited save. Reported
-    rather than worked around: the alternative is silently composing a slide
-    from two different revisions."""
+    Absence is not necessarily a fault. A right-eye RGB needs enough right-eye
+    filters in the source observation to composite one, and plenty of Pancam
+    observations never captured them — scenes have been re-saved half a dozen
+    times over a month and produced the same gap every time, because the frames
+    were never taken. Those panels render as placeholders rather than failing,
+    and are reported so a human can judge which gaps are real."""
     if not folder:
         return []
-    missing = []
-    if scene_file(folder, '.fits') is None:
-        missing.append('.fits')
-    for suffix, caption in _LAYOUT:
-        if suffix and find_panel(folder, suffix) is None:
-            missing.append(f"{caption} image")
-    return missing
+    return [caption for suffix, caption in _LAYOUT
+            if suffix and find_panel(folder, suffix) is None]
+
+
+def missing_artifacts(folder):
+    """Everything a complete save should hold but this folder doesn't, panels
+    included. For reporting; only a missing .fits actually stops a slide."""
+    if not folder:
+        return []
+    missing = [] if scene_file(folder, '.fits') else ['.fits']
+    return missing + [f"{caption} image" for caption in missing_panels(folder)]
 
 
 def _rect(x, y, w, h):
@@ -266,15 +272,16 @@ def build_summary_slide(pancam_path, scene, folder=None):
             "nothing has been saved for it yet."
         )
 
-    # A complete save has a .fits and all three panels. Anything less means the
-    # current folder is broken, and the fix is to report it — reaching into an
-    # older revision for the missing piece is exactly the folder-mixing this
-    # module resolves a folder once to prevent.
-    missing = missing_artifacts(folder)
-    if missing:
+    # Only a missing .fits stops a slide. Without it there is no ROI metadata
+    # and no way to tell an interrupted save from a complete one, so it is
+    # reported rather than guessed at — and never patched from a neighbouring
+    # revision, which is the folder-mixing this module exists to prevent.
+    # Missing panels are different: see missing_panels() for why they are
+    # frequently legitimate. Those cells render as placeholders.
+    if scene_file(folder, '.fits') is None:
         raise FileNotFoundError(
-            f"'{scene['name']}': {os.path.basename(folder)} is missing "
-            f"{', '.join(missing)}. The scene needs re-saving from ROI Studio."
+            f"'{scene['name']}': {os.path.basename(folder)} has no .fits file. "
+            "The scene needs re-saving from ROI Studio."
         )
 
     rois, roi_error = _load_rois(pancam_path, scene)

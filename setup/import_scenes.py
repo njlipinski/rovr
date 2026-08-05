@@ -49,6 +49,13 @@ Backup utility: --backup
     Creates a backup of the database file and the 'working' directories for
     both rovers (includes the fits and sel files),
 
+Utility: --build-slides
+    Builds summary slides for scenes that reached a supervisor before slides
+    existed (default statuses 5,6,7 -- override with --slide-status). Skips any
+    slide already newer than everything it was built from, so it is safe to
+    re-run and safe to interrupt. Scenes whose folder is incomplete are listed
+    at the end rather than stopping the run.
+
 Utility: --copy-approved
     Copies the latest .fits file for every approved scene into
     <path>\\ready_for_asdf. Safe to re-run — skips any scene whose destination
@@ -75,6 +82,10 @@ Usage:
     python setup/import_scenes.py --fix-panel-names --dry-run
 
     python setup/import_scenes.py --wipe
+
+    python setup/import_scenes.py --build-slides --dry-run
+    python setup/import_scenes.py --build-slides
+    python setup/import_scenes.py --build-slides --slide-status 7 --force
 
     python setup/import_scenes.py --copy-approved
     python setup/import_scenes.py --copy-approved --dry-run
@@ -860,6 +871,85 @@ def backup_scenes(pancam_root, db_path):
     print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
 
 
+def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False):
+    """Build summary slides for every scene in the given statuses.
+
+    Backfill for scenes that reached a supervisor before slides existed. Going
+    forward the dashboards build one as a scene enters supervisor review, so
+    this only needs running once (and again after fixing a broken folder).
+
+    Safe to re-run and safe to interrupt: a scene whose slide is already newer
+    than everything it was built from is skipped, so a second run picks up
+    where the last one stopped. A scene with an incomplete folder is reported
+    and the run continues -- collecting those into one list at the end is the
+    point, since they need a human to re-save them.
+    """
+    from app.paths import find_scene_folder, scene_file
+    from app.slides import build_summary_slide, missing_panels, slide_is_current
+
+    scenes = conn.execute(
+        "SELECT * FROM scenes WHERE status IN (%s) ORDER BY rover, sol, seq_id"
+        % ','.join('?' * len(statuses)),
+        tuple(statuses),
+    ).fetchall()
+
+    total = len(scenes)
+    labels = ', '.join(SceneStatus.LABELS.get(s, str(s)) for s in sorted(statuses))
+    print(f"{total} scene(s) in status: {labels}\n")
+
+    built = skipped = 0
+    problems = []
+    gapped = []
+    for i, scene in enumerate(scenes, 1):
+        prefix = f"[{i}/{total}  {i / total * 100:5.1f}%]  {scene['name']}"
+        try:
+            if not force and slide_is_current(pancam_root, scene):
+                skipped += 1
+                if i % 25 == 0 or i == total:
+                    print(f"{prefix}  (up to date)")
+                continue
+
+            # Resolved up front so the dry run reports exactly what a real run
+            # would hit -- the point of the preview is to surface the scenes
+            # needing a human before committing half an hour of rendering.
+            folder = find_scene_folder(pancam_root, scene)
+            if folder is None:
+                raise FileNotFoundError("no ROI Studio folder found - nothing saved for it yet")
+            if scene_file(folder, '.fits') is None:
+                raise FileNotFoundError(f"{os.path.basename(folder)} has no .fits file")
+            gaps = missing_panels(folder)
+            if gaps:
+                gapped.append((scene['name'], SceneStatus.LABELS.get(scene['status']),
+                               os.path.basename(folder), gaps))
+
+            note = "  [dry run] would build" if dry_run else "  built"
+            if gaps:
+                note += f" (placeholder for: {', '.join(gaps)})"
+            if not dry_run:
+                build_summary_slide(pancam_root, scene, folder=folder)
+            print(f"{prefix}{note}")
+            built += 1
+        except (FileNotFoundError, OSError, ValueError) as e:
+            problems.append((scene['name'], SceneStatus.LABELS.get(scene['status']), str(e)))
+            print(f"{prefix}  SKIPPED - {e}")
+
+    verb = "would build" if dry_run else "built"
+    print(f"\n{built} {verb}, {skipped} already up to date, {len(problems)} could not be built")
+    if gapped:
+        # Not failures: a panel the source observation never had the filters to
+        # produce is permanent, and re-saving will not change it. Listed so a
+        # human can tell those apart from a genuinely interrupted save.
+        print(f"\n{len(gapped)} slide(s) built with a placeholder for a missing panel:")
+        for name, status, folder, gaps in gapped:
+            print(f"  {name}  [{status}]  {folder}")
+            print(f"     no {', '.join(gaps)}")
+    if problems:
+        print("\nScenes that could not be built at all:")
+        for name, status, err in problems:
+            print(f"  {name}  [{status}]")
+            print(f"     {err}")
+
+
 def copy_approved_fits(conn, pancam_root, dry_run=False):
     """Copy the latest .fits file for every approved (status 7) scene into
     <pancam_root>/ready_for_asdf.
@@ -969,6 +1059,26 @@ def main():
         action="store_true",
         help="Copy the latest .fits file for every approved scene into <path>/ready_for_asdf.",
     )
+    parser.add_argument(
+        "--build-slides",
+        action="store_true",
+        help="Build summary slides for scenes that reached a supervisor before "
+             "slides existed. Skips any already up to date, so it is safe to "
+             "re-run and safe to interrupt.",
+    )
+    parser.add_argument(
+        "--slide-status",
+        default="5,6,7",
+        metavar="LIST",
+        help="Comma-separated statuses to build slides for (default: 5,6,7 -- "
+             "the scenes a supervisor sees. Earlier statuses get a slide "
+             "automatically when they reach supervisor review).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --build-slides, rebuild every slide even if it is already up to date.",
+    )
     args = parser.parse_args()
 
     # --build-folders and --restructure-folders don't need a DB connection
@@ -1025,6 +1135,31 @@ def main():
             print("Error: --backup requires DB_PATH in config.py.")
             sys.exit(1)
         backup_scenes(args.path, DB_PATH)
+        return
+
+    if args.build_slides:
+        if not args.path:
+            print("Error: --build-slides requires --path or PANCAM_PATH in config.py.")
+            sys.exit(1)
+        if not Path(args.path).exists():
+            print(f"Error: '{args.path}' does not exist.")
+            sys.exit(1)
+        try:
+            statuses = [int(s) for s in args.slide_status.split(',') if s.strip()]
+        except ValueError:
+            print(f"Error: --slide-status must be a comma-separated list of integers, got '{args.slide_status}'.")
+            sys.exit(1)
+        unknown = [s for s in statuses if s not in SceneStatus.LABELS]
+        if not statuses or unknown:
+            print(f"Error: --slide-status has no valid status values ({unknown or 'empty'}).")
+            sys.exit(1)
+        initialize_db()
+        conn = get_db_connection()
+        try:
+            build_summary_slides(conn, args.path, statuses,
+                                 dry_run=args.dry_run, force=args.force)
+        finally:
+            conn.close()
         return
 
     if args.copy_approved:
