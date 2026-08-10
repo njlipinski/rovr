@@ -41,9 +41,10 @@ _FALLBACK_FIELDS = (
     ('DESCRIPTION',     'Description'),
 )
 
-# Free-text fields are laid out as a wrapped line under their row rather than
-# as a table column, since they have no bounded width.
-FREE_TEXT_FIELDS = ('DESCRIPTION',)
+# Fields drawn on a line under their row rather than in a table column. Both are
+# far longer than any other field, and left in the grid they set the column
+# widths for the whole table and force the type down to fit them.
+CONTINUATION_FIELDS = ('FEATURE_SUBTYPE', 'DESCRIPTION')
 
 # Header cards that identify an HDU as an ROI rather than describing the scene.
 _ROI_NAME_KEY = 'NAME'
@@ -85,11 +86,37 @@ def load_field_schema(roi_studio_path=None):
 
 
 # ── ROI swatch colours ────────────────────────────────────────────────────────
-# An ROI's name IS its colour ('green', 'cyan-2', 'red+2'), which is what ties a
-# table row to its box in the DCS and its curve in the spectra plot. ROI Studio
-# ships no palette file, so these are reconstructed from the name: a base hue,
-# darkened by a '-N' suffix and lightened by a '+N' one. The swatch is a
-# scanning aid only — every row also prints the name, which is authoritative.
+# An ROI's name IS its colour, which is what ties a table row to its box in the
+# DCS and its curve in the spectra plot. ROI Studio writes the display name
+# ('forest', 'scarlet'), so that is what arrives in the .fits.
+#
+# Its palette is defined in ROI Studio's own ColorManager._init_pcam_palette(),
+# which maps each display name to a MERSpect key that is itself a base hue with
+# a shade offset. Those keys are mirrored below and the offsets applied here, so
+# the palette's internal relationships hold: scarlet is brighter than red,
+# maroon is the darkest red, salmon the lightest. The RGB values are close
+# enough to read as the right colour rather than exact matches, and the swatch
+# is a scanning aid only. Every row also prints the name, which is authoritative.
+_MCZ_KEY_BY_ROI_NAME = {
+    'red':       'red-1',
+    'green':     'green',
+    'blue':      'blue',
+    'cyan':      'cyan',
+    'forest':    'green-2',
+    'yellow':    'yellow',
+    'magenta':   'magenta',
+    'salmon':    'red+2',
+    'teal':      'cyan-2',
+    'goldenrod': 'orange-1',
+    'sienna':    'orange-2',
+    'navy':      'blue-2',
+    'scarlet':   'red',
+    'maroon':    'red-2',
+    'purple':    'purple',
+}
+
+# Base hues the keys above resolve against. 'orange' is a base only: it carries
+# goldenrod and sienna, and is not itself an ROI colour.
 _BASE_COLORS = {
     'green':   (0.00, 0.80, 0.27),
     'blue':    (0.00, 0.27, 1.00),
@@ -99,8 +126,6 @@ _BASE_COLORS = {
     'red':     (0.88, 0.00, 0.00),
     'orange':  (1.00, 0.55, 0.00),
     'purple':  (0.60, 0.20, 0.80),
-    'white':   (0.90, 0.90, 0.90),
-    'black':   (0.15, 0.15, 0.15),
 }
 _SHADE_RE = re.compile(r'^([a-z]+)\s*([+-])\s*(\d+)$', re.IGNORECASE)
 _SHADE_STEP = 0.20
@@ -108,8 +133,12 @@ _UNKNOWN_COLOR = (0.50, 0.50, 0.50)
 
 
 def roi_color(name):
-    """Return an RGB triple for an ROI's colour name, e.g. 'cyan-2'."""
+    """Return an RGB triple for an ROI's colour name, e.g. 'forest'.
+
+    A raw MERSpect key ('cyan-2') resolves too, so a .fits written before ROI
+    Studio normalized names to the display form still gets its colour."""
     key = (name or '').strip().lower()
+    key = _MCZ_KEY_BY_ROI_NAME.get(key, key)
     shift = 0
     m = _SHADE_RE.match(key)
     if m:

@@ -165,7 +165,7 @@ def _folder_rank(path, versionless):
 
     Newest is a question about revision history, not about file timestamps: a
     migration, a backup restore, or an analyst reopening an old folder all move
-    mtimes without producing a newer save, and roughly 9% of multi-folder
+    mtimes without producing a newer save, and some multi-folder
     scenes on the drive have the two orderings disagreeing. So version leads,
     and mtime only breaks a genuine tie (an untagged folder against an explicit
     _v1). Convention outranks both — see _CURRENT_CONVENTION_RE."""

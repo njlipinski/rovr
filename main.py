@@ -36,7 +36,7 @@ def _try_update():
 
         # Skip if we're already running from the R drive copy
         if os.path.normcase(os.path.abspath(local_exe)) == \
-           os.path.normcase(os.path.abspath(source_exe)):
+            os.path.normcase(os.path.abspath(source_exe)):
             return
 
         with open(version_file, encoding='utf-8-sig') as f:
@@ -147,7 +147,7 @@ except Exception:
         from PyQt6.QtWidgets import QApplication, QMessageBox
         QApplication(sys.argv)
         QMessageBox.critical(None, "ROVR failed to start",
-                             f"An error occurred. Details saved to:\n{log_path}")
+                            f"An error occurred. Details saved to:\n{log_path}")
     except Exception:
         pass
     sys.exit(1)

@@ -2,12 +2,13 @@
 import os
 import shutil
 from PyQt6.QtWidgets import (
-    QPushButton, QSplitter, QMessageBox, QTableWidgetItem,
+    QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS, REVIEW_BUTTONS,
+    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
+    PersistentSplitter,
     make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -185,53 +186,47 @@ class SupervisorDashboard(Dashboard):
         )
         master_section = self.master_section
 
-        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter = PersistentSplitter(Qt.Orientation.Vertical, 'supervisor.left')
         left_splitter.addWidget(my_queue_section)
         left_splitter.addWidget(in_progress_section)
 
+        # Single pane, so no handle to drag and nothing to persist.
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.addWidget(pool_section)
 
-        top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        top_splitter.addWidget(left_splitter)
-        top_splitter.addWidget(right_splitter)
-
-        main_splitter = QSplitter(Qt.Orientation.Vertical)
-        main_splitter.addWidget(top_splitter)
-        main_splitter.addWidget(master_section)
-        main_splitter.setStretchFactor(0, 1)
-        main_splitter.setStretchFactor(1, 2)
-
-        refresh_button = QPushButton("Refresh")
-        refresh_button.clicked.connect(self.refresh_task_list)
+        # Top row: the queues a supervisor works out of. Bottom row: the master
+        # list. The tray goes between them, where the seam already was.
+        top_row = PersistentSplitter(Qt.Orientation.Horizontal, 'supervisor.top')
+        top_row.addWidget(left_splitter)
+        top_row.addWidget(right_splitter)
 
         tray_bar = self.make_tray_bar([
-            # REVIEW_BUTTONS rather than SCENE_BUTTONS: every scene here is
-            # claimed for review, so its notes button is "Review Scene" and
-            # carries Approve/Kick Back. See ADR-022.
             # 'summary_slide' leads: it is the fastest way to see a scene's
             # ROIs, spectra and metadata, and is meant to be reached before
             # anyone waits on ROI Studio to start.
             (self.my_queue_table, "My Work Queue",
-             [("Approve",        "handle_approve"),
-              ("Mark Bad Scene", "handle_mark_bad_scene"),
-              ("Release",        "handle_release"),
-              'summary_slide', *REVIEW_BUTTONS]),
+            [("Approve",        "handle_approve"),
+            ("Mark Bad Scene", "handle_mark_bad_scene"),
+            ("Release",        "handle_release"),
+              'summary_slide', *SCENE_BUTTONS]),
             (self.pool_table, "Supervisor Pool",
              [("Claim", "handle_claim"), 'summary_slide', *SCENE_BUTTONS]),
             (self.in_progress_table, "In Progress", SCENE_BUTTONS),
             (self.master_table, "All Scenes",
-             [*SCENE_BUTTONS,
-              ("Edit Scene",  "handle_edit_scene"),
-              ("Reset Scene", "handle_reset_scene")]),
+            [*SCENE_BUTTONS,
+            ("Edit Scene",  "handle_edit_scene"),
+            ("Reset Scene", "handle_reset_scene")]),
         ])
 
-        # stretch=1: all surplus window height goes to the tables. A vertical
-        # QSplitter already claims it by policy, but say so explicitly so the
-        # layout doesn't depend on this splitter's orientation staying vertical.
-        self.main_content_layout.addWidget(main_splitter, stretch=1)
-        self.main_content_layout.addWidget(tray_bar)
-        self.main_content_layout.addWidget(refresh_button)
+        # stretch=1: all surplus window height goes to the tables, none of it to
+        # the pinned tray band in the middle.
+        # weights: the master list keeps the larger share it had before the tray
+        # moved between the rows.
+        self.main_content_layout.addWidget(
+            self.make_rows_splitter('supervisor.rows', top_row, tray_bar, master_section,
+                                    weights=(1, 2)),
+            stretch=1,
+        )
 
         self.refresh_task_list()
 

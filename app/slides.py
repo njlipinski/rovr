@@ -11,8 +11,9 @@ The three image panels are not drawn here. ROI Studio writes them beside the
 already on disk. Panels are placed at native pixel size and never cropped or
 enlarged; anything smaller than its cell is centred with margin.
 
-A scene can have anywhere from zero to fifteen ROIs, so the metadata
-table shrinks to fit and spills onto a second page rather than being truncated.
+A scene can have anywhere from zero to fifteen ROIs, one per palette colour, and
+the metadata table's type is sized so all fifteen fit a cell. Anything beyond
+that spills onto a second page rather than being truncated.
 
 No Qt and no SQL — a slide is a pure function of a scene row and the Pancam
 tree, so it can be rendered off the UI thread and tested without a database.
@@ -30,7 +31,7 @@ from app.paths import (
     scene_file, summary_slide_paths,
 )
 from app.roi_metadata import (
-    FREE_TEXT_FIELDS, load_field_schema, present_fields, read_scene_rois, roi_color,
+    CONTINUATION_FIELDS, load_field_schema, present_fields, read_scene_rois, roi_color,
 )
 
 # Panels, in the 2x2 order they are laid out. The left DCS / right RGB pairing
@@ -48,10 +49,12 @@ _LAYOUT = (
 # dominate the slide are composited without any resampling at all.
 CELL_PX    = 1039
 DPI        = 100
-MARGIN_PX  = 24
-GAP_PX     = 24
-TITLE_PX   = 76
-CAPTION_PX = 44
+# Margins and gaps are hairlines: the page is over 2000px on a side, and every
+# pixel spent on white space is a pixel not spent on the panels or the table.
+MARGIN_PX  = 8
+GAP_PX     = 8
+TITLE_PX   = 52
+CAPTION_PX = 30
 
 WIDTH_PX  = MARGIN_PX * 2 + CELL_PX * 2 + GAP_PX
 HEIGHT_PX = MARGIN_PX * 2 + TITLE_PX + (CAPTION_PX + CELL_PX) * 2 + GAP_PX
@@ -63,15 +66,40 @@ _CAPTION_C = '#444444'
 _MUTED_C   = '#999999'
 _RULE_C    = '#dddddd'
 
+# Type sizes are in points against a 100 DPI page more than 20 inches wide, so
+# they read far smaller than the same number would on a letter page. These are
+# sized for a slide viewed fit-to-width on a monitor.
+_TITLE_FS       = 30
+_SUB_FS         = 17
+_CAPTION_FS     = 17
+_PLACEHOLDER_FS = 24
+
 # Row geometry for the metadata table, in pixels within its cell.
-# Rows expand to fill the cell up to _ROW_MAX_PX, then shrink toward
-# _ROW_MIN_PX as ROI count climbs. At the minimum, about 29 rows fit a cell —
-# past that the table continues on a second page. Scenes here run 0-15 ROIs, so
-# in practice the maximum governs and the overflow path is a safety net.
-_TABLE_HEAD_PX = 34
-_ROW_MAX_PX    = 100
-_ROW_MIN_PX    = 34
-_SWATCH_PX     = 15
+#
+# The palette has 15 colours, so a scene cannot hold more than 15 ROIs, and the
+# body type is sized so exactly that many rows fit a cell. That fixes the type
+# size for every slide rather than letting it drift with ROI count. A table with
+# fewer rows spreads them out (up to _ROW_STRETCH times the base height) instead
+# of growing the text, so the bottom of the cell is not left empty.
+_TABLE_HEAD_PX = 46
+_ROWS_PER_CELL = 15
+_ROW_STRETCH   = 2.0
+# Body point size as a fraction of row height in pixels. Leaves room under the
+# value line for a free-text field's wrapped line without the two colliding.
+_BODY_FS_RATIO = 0.36
+_BODY_FS_MIN   = 11
+_GUTTER_CHARS  = 2
+_SWATCH_PX     = 26
+_SWATCH_GAP_PX = 8
+
+# Distance is the one field ROVR abbreviates. Its three values are long enough
+# to set their column's width while carrying very little information, and its
+# heading is wider than the abbreviations, so that is shortened too. An
+# unrecognized value prints as written: this is a display shortcut, not a
+# vocabulary ROVR enforces.
+_DISTANCE_KEY     = 'DISTANCE'
+_DISTANCE_ABBREV  = {'nearfield': 'NF', 'midfield': 'MF', 'farfield': 'FF'}
+_HEADER_OVERRIDES = {_DISTANCE_KEY: 'Dist'}
 
 
 def missing_panels(folder):
@@ -141,16 +169,46 @@ def _draw_image(fig, image_path, x, y):
 
 def _draw_placeholder(fig, x, y, message):
     ax = _cell_axes(fig, x, y)
-    ax.text(0.5, 0.5, message, ha='center', va='center', fontsize=15, color=_MUTED_C)
+    ax.text(0.5, 0.5, message, ha='center', va='center',
+            fontsize=_PLACEHOLDER_FS, color=_MUTED_C)
     ax.add_patch(Rectangle((0, 0), 1, 1, fill=False, edgecolor=_RULE_C, linewidth=0.8))
 
 
-def _column_layout(fields, width_px):
-    """Split a cell's width into a name column plus one column per field.
+def _display_value(key, raw):
+    """A field's value as it should read in the table."""
+    value = str(raw or '').strip()
+    if key == _DISTANCE_KEY:
+        return _DISTANCE_ABBREV.get(value.lower(), value)
+    return value
 
-    Widths are weighted by how much text each field actually holds, so a long
-    'Feature subtype' isn't given the same room as a three-word 'Float'."""
-    weights = [1.4] + [max(1.0, len(label) / 6.0) for _key, label in fields]
+
+def _header_label(key, label):
+    """A column's heading. Overridden where ROI Studio's own label is wider than
+    the values under it and would set the column width on its own."""
+    return str(_HEADER_OVERRIDES.get(key, label) or key)
+
+
+def _split_fields(fields):
+    """(columns, continuation) - the fields that get a column of their own, and
+    the long ones drawn on a line under each row."""
+    return ([f for f in fields if f[0] not in CONTINUATION_FIELDS],
+            [f for f in fields if f[0] in CONTINUATION_FIELDS])
+
+
+def _column_chars(fields, rois):
+    """Character width each column needs: its heading, or its longest value."""
+    def longest(key):
+        return max((len(_display_value(key, r.get(key))) for r in rois), default=0)
+
+    name_col = max(len("ROI"), max((len(str(r.get('name', ''))) for r in rois), default=0))
+    return [name_col] + [max(len(_header_label(key, label)), longest(key))
+                         for key, label in fields]
+
+
+def _column_layout(chars, width_px):
+    """Split a cell's width into columns proportional to the text each holds, so
+    a long 'Texture' isn't given the same room as a three-word 'Float'."""
+    weights = [c + _GUTTER_CHARS for c in chars]
     total = sum(weights) or 1.0
     xs, cursor = [], 0.0
     for w in weights:
@@ -159,28 +217,51 @@ def _column_layout(fields, width_px):
     return xs, [width_px * w / total for w in weights]
 
 
-def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
-    """Draw as many ROI rows as fit, returning the index of the first that didn't.
+def _fitted_body_fs(chars, row_px, width_px):
+    """The largest body size that satisfies both constraints at once: the row
+    height that lets _ROWS_PER_CELL rows fit, and the cell width that lets the
+    widest row print without being cut.
 
-    Rows shrink toward _ROW_MIN_PX before any are dropped, so the common case
-    (a handful of ROIs) is roomy and a heavily-annotated scene still fits."""
+    Sizing on the row alone was what produced a table of 'nearfie...' in every
+    column. Below _BODY_FS_MIN the width constraint is abandoned rather than
+    shrinking further, and _ellipsize trims what still doesn't fit."""
+    by_row = row_px * _BODY_FS_RATIO
+    needed = sum(c + _GUTTER_CHARS for c in chars) or 1
+    usable = max(1.0, width_px - _SWATCH_PX - _SWATCH_GAP_PX)
+    by_width = usable / (needed * 0.6 * (DPI / 72.0))
+    return max(_BODY_FS_MIN, min(by_row, by_width))
+
+
+def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
+    """Draw as many ROI rows as fit, returning the index of the first that didn't."""
     ax = _cell_axes(fig, x, y, w, h)
     ax.add_patch(Rectangle((0, 0), 1, 1, fill=False, edgecolor=_RULE_C, linewidth=0.8))
 
     if not rois:
         ax.text(0.5, 0.5, "No ROIs recorded for this scene",
-                ha='center', va='center', fontsize=14, color=_MUTED_C)
+                ha='center', va='center', fontsize=_PLACEHOLDER_FS, color=_MUTED_C)
         return len(rois)
 
     remaining = len(rois) - start
     avail = h - _TABLE_HEAD_PX
-    row_px = min(_ROW_MAX_PX, max(_ROW_MIN_PX, avail / max(1, remaining)))
-    fits = max(1, int(avail // row_px))
+    # Base height is whatever fits _ROWS_PER_CELL, and the type is sized to it
+    # once, here. Rows themselves may stretch when there are fewer ROIs; the
+    # type does not follow, so every slide's table reads at the same size.
+    base_row_px = avail / _ROWS_PER_CELL
+    row_px = max(base_row_px, min(base_row_px * _ROW_STRETCH, avail / max(1, remaining)))
+    # Epsilon: with row_px at exactly avail/_ROWS_PER_CELL, float division leaves
+    # the quotient a hair under the row count and drops the last row.
+    fits = max(1, int(avail / row_px + 1e-9))
     end = min(len(rois), start + fits)
 
-    xs, widths = _column_layout(fields, w)
-    body_fs = max(6.5, min(9.5, row_px * 0.20))
-    head_fs = body_fs + 0.5
+    col_fields, cont_fields = _split_fields(fields)
+    shown = rois[start:end]
+    chars = _column_chars(col_fields, shown)
+    xs, widths = _column_layout(chars, w)
+    body_fs = _fitted_body_fs(chars, base_row_px, w)
+    head_fs = body_fs
+    sub_fs = body_fs * 0.78
+    indent = xs[0] + _SWATCH_PX + _SWATCH_GAP_PX
 
     def tx(px):      # pixel offset within the cell -> axes fraction
         return px / w
@@ -188,42 +269,41 @@ def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
     def ty(px):
         return 1.0 - px / h
 
-    for i, (_key, label) in enumerate(fields):
-        ax.text(tx(xs[i + 1]), ty(_TABLE_HEAD_PX * 0.55), label,
+    for i, (key, label) in enumerate(col_fields):
+        ax.text(tx(xs[i + 1]), ty(_TABLE_HEAD_PX * 0.55), _header_label(key, label),
                 fontsize=head_fs, color=_CAPTION_C, ha='left', va='center')
     ax.text(tx(xs[0]), ty(_TABLE_HEAD_PX * 0.55), "ROI",
             fontsize=head_fs, color=_CAPTION_C, ha='left', va='center')
     ax.plot([0, 1], [ty(_TABLE_HEAD_PX)] * 2, color=_RULE_C, linewidth=0.8)
 
-    free_text = [k for k, _ in fields if k in FREE_TEXT_FIELDS]
-    for n, roi in enumerate(rois[start:end]):
+    for n, roi in enumerate(shown):
         top = _TABLE_HEAD_PX + n * row_px
-        mid = ty(top + row_px * 0.38)
+        mid = ty(top + row_px * 0.34)
 
-        sw = _SWATCH_PX / w
         ax.add_patch(Rectangle(
-            (tx(xs[0]), mid - (_SWATCH_PX / h) / 2), sw, _SWATCH_PX / h,
+            (tx(xs[0]), mid - (_SWATCH_PX / h) / 2), _SWATCH_PX / w, _SWATCH_PX / h,
             facecolor=roi_color(roi.get('name')), edgecolor='#666666', linewidth=0.5,
         ))
-        ax.text(tx(xs[0] + _SWATCH_PX + 6), mid, str(roi.get('name', '')),
+        ax.text(tx(indent), mid,
+                _ellipsize(str(roi.get('name', '')),
+                           widths[0] - _SWATCH_PX - _SWATCH_GAP_PX, body_fs),
                 fontsize=body_fs, color='#222222', ha='left', va='center')
 
-        for i, (key, _label) in enumerate(fields):
-            if key in FREE_TEXT_FIELDS:
-                continue
-            value = str(roi.get(key, '') or '').strip()
+        for i, (key, _label) in enumerate(col_fields):
+            value = _display_value(key, roi.get(key))
             if not value:
                 continue
             ax.text(tx(xs[i + 1]), mid, _ellipsize(value, widths[i + 1], body_fs),
                     fontsize=body_fs, color='#222222', ha='left', va='center')
 
-        for key in free_text:
-            value = str(roi.get(key, '') or '').strip()
-            if value:
-                ax.text(tx(xs[0] + _SWATCH_PX + 6), ty(top + row_px * 0.78),
-                        _ellipsize(value, w * 0.92, body_fs - 0.5),
-                        fontsize=body_fs - 0.5, color=_SUB_C, ha='left', va='center',
-                        style='italic')
+        # The long fields share one continuation line under the row, so a scene
+        # carrying both a subtype and a description still costs a row two lines,
+        # not three.
+        extra = [v for v in (_display_value(k, roi.get(k)) for k, _ in cont_fields) if v]
+        if extra:
+            ax.text(tx(indent), ty(top + row_px * 0.74),
+                    _ellipsize(" · ".join(extra), w - indent - _GUTTER_CHARS, sub_fs),
+                    fontsize=sub_fs, color=_SUB_C, ha='left', va='center', style='italic')
 
         if n:
             ax.plot([0, 1], [ty(top)] * 2, color='#f0f0f0', linewidth=0.5)
@@ -232,10 +312,15 @@ def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
 
 
 def _ellipsize(text, width_px, fontsize):
-    """Trim to what fits a column. Approximate — DejaVu averages ~0.6em per
-    character — but it only ever shortens, so a wrong guess costs a character,
-    never an overlap that hides another column."""
-    max_chars = max(4, int(width_px / (fontsize * 0.62)))
+    """Trim to what fits a column. Approximate - DejaVu averages ~0.6em per
+    character - but it only ever shortens, so a wrong guess costs a character,
+    never an overlap that hides another column.
+
+    fontsize is in points and width_px in pixels, so the point size is converted
+    at the page's DPI first. Leaving that out made every column look ~40% wider
+    than it is, which only stayed invisible while the type was small."""
+    char_px = fontsize * (DPI / 72.0) * 0.6
+    max_chars = max(4, int(width_px / char_px))
     return text if len(text) <= max_chars else text[:max_chars - 1] + '…'
 
 
@@ -288,17 +373,22 @@ def build_summary_slide(pancam_path, scene, folder=None):
     fields = present_fields(rois, load_field_schema()) if rois else []
 
     fig = _new_figure()
-    _fig_text(fig, MARGIN_PX, MARGIN_PX + TITLE_PX * 0.42, scene['name'],
-              fontsize=21, color=_TITLE_C, ha='left', va='center')
-    _fig_text(fig, MARGIN_PX, MARGIN_PX + TITLE_PX * 0.80,
+    # Title and subtitle share one line: the name left, the scene's identifiers
+    # right. Right-aligning the subtitle rather than running it on after the
+    # title avoids measuring the title's width, and cannot collide with it for
+    # any name the tree actually holds.
+    title_y = MARGIN_PX + TITLE_PX * 0.55
+    _fig_text(fig, MARGIN_PX, title_y, scene['name'],
+              fontsize=_TITLE_FS, color=_TITLE_C, ha='left', va='center')
+    _fig_text(fig, WIDTH_PX - MARGIN_PX, title_y,
               _scene_subtitle(scene, len(rois)),
-              fontsize=11, color=_SUB_C, ha='left', va='center')
+              fontsize=_SUB_FS, color=_SUB_C, ha='right', va='center')
 
     overflow_from = None
     for i, (suffix, caption) in enumerate(_LAYOUT):
         x, y = _cell_origin(i)
         _fig_text(fig, x + 4, y + CAPTION_PX * 0.65, caption,
-                  fontsize=13, color=_CAPTION_C, ha='left', va='center')
+                  fontsize=_CAPTION_FS, color=_CAPTION_C, ha='left', va='center')
         cell_y = y + CAPTION_PX
 
         if suffix is None:
@@ -344,7 +434,7 @@ def _overflow_page(scene, rois, fields, start):
     fig = _new_figure()
     _fig_text(fig, MARGIN_PX, MARGIN_PX + TITLE_PX * 0.42,
               f"{scene['name']} — ROI metadata (continued)",
-              fontsize=19, color=_TITLE_C, ha='left', va='center')
+              fontsize=_TITLE_FS - 4, color=_TITLE_C, ha='left', va='center')
     width = WIDTH_PX - MARGIN_PX * 2
     height = HEIGHT_PX - MARGIN_PX * 2 - TITLE_PX
     _draw_roi_table(fig, MARGIN_PX, MARGIN_PX + TITLE_PX, rois, fields,

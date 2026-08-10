@@ -42,6 +42,17 @@ def set_column_widths(key, widths):
     _save(data)
 
 
+def get_splitter_sizes(key):
+    """Return the saved [fraction, ...] of total size for a splitter's panes, or None."""
+    return _load().get('splitter_sizes', {}).get(key)
+
+
+def set_splitter_sizes(key, fractions):
+    data = _load()
+    data.setdefault('splitter_sizes', {})[key] = fractions
+    _save(data)
+
+
 def get_dark_mode():
     return bool(_load().get('dark_mode', False))
 

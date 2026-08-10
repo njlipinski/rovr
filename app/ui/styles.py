@@ -17,6 +17,49 @@ MIN_COL_WIDTH = 30   # minimum column width during interactive resize
 NEW_ACTIVITY_LIGHT = '#dbeafe'   # light blue, readable on white
 NEW_ACTIVITY_DARK  = '#1a3a5c'   # dark blue, readable on dark background
 
+# ── Colored action buttons ───────────────────────────────────────────────────
+# What the color means, not which button wears it: green moves a scene forward,
+# blue opens the review dialog, red sends it back or ends it. Applied per widget
+# rather than through a theme rule, because the light theme deliberately runs
+# with no stylesheet at all and these must look the same either way. Shades are
+# dark enough for white text to clear WCAG AA on both backgrounds.
+
+BUTTON_GREEN = ('#2e7d32', '#1f5c24')   # (base, hover/pressed)
+BUTTON_BLUE  = ('#1565c0', '#0d4a94')
+BUTTON_RED   = ('#c62828', '#992020')
+
+# Which labels get colored. Keyed by label because that is what both the
+# SCENE_ACTIONS registry and the dashboards' explicit (label, handler) pairs
+# have in common; a button whose label is absent keeps the plain theme look.
+BUTTON_COLOR_BY_LABEL = {
+    'Approve':        BUTTON_GREEN,
+    'Submit':         BUTTON_GREEN,
+    'Review':         BUTTON_BLUE,
+    'Kick Back':      BUTTON_RED,
+    'Mark Bad Scene': BUTTON_RED,
+    'Reset Scene':    BUTTON_RED,
+}
+
+
+def color_button(btn):
+    """Apply this button's color, if its label has one. No-op otherwise."""
+    colors = BUTTON_COLOR_BY_LABEL.get(btn.text())
+    if colors is None:
+        return
+    base, dark = colors
+    # The full box is restated: a per-widget stylesheet outranks the app one for
+    # the properties it names, and the padding/height set there must survive.
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {base}; color: #ffffff;
+            border: 1px solid {dark}; padding: 3px 10px;
+            border-radius: 3px; min-height: 20px;
+        }}
+        QPushButton:hover    {{ background-color: {dark}; }}
+        QPushButton:pressed  {{ background-color: {dark}; }}
+        QPushButton:disabled {{ background-color: #6e6e6e; color: #cfcfcf; border-color: #5a5a5a; }}
+    """)
+
 # ── Dark theme (QSS) ─────────────────────────────────────────────────────────
 
 DARK_STYLESHEET = """

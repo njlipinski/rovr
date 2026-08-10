@@ -11,8 +11,11 @@ from PyQt6.QtWidgets import (
     QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
     QApplication, QTabWidget, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QSize, QUrl
-from PyQt6.QtGui import QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices
+from PyQt6.QtCore import Qt, QSize, QUrl, QTimer
+from PyQt6.QtGui import (
+    QPainter, QColor, QAction, QActionGroup, QTextCursor, QDesktopServices,
+    QShortcut, QKeySequence,
+)
 from app.models import SceneStatus, SceneFlag, Role
 from app.paths import (
     FolderKind, kind_path, find_sel_file, find_fits_file,
@@ -25,9 +28,10 @@ from app.local_settings import (
     get_dark_mode, set_dark_mode,
     get_ui_scale, set_ui_scale,
     get_dialog_size, set_dialog_size,
+    get_splitter_sizes, set_splitter_sizes,
     set_scene_viewed_at,
 )
-from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme
+from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme, color_button
 
 # Preset options shown in the ☰ -> UI Scale menu. Applied via QT_SCALE_FACTOR
 # at next launch (Qt reads it once, at startup) — not live.
@@ -37,6 +41,7 @@ from app.db import (
     get_science_notes, add_science_note, update_science_note, delete_science_note,
     update_username, update_user_password, get_user_by_username,
     update_scene_flags, get_user_stats, get_all_user_stats, get_all_supervisor_stats,
+    get_supervisor_analyst_coverage,
 )
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
@@ -179,6 +184,90 @@ def make_scene_table(headers):
     return SceneTable(headers)
 
 
+class PersistentSplitter(QSplitter):
+    """QSplitter that remembers where the user dragged its handles, keyed by
+    `key` in local settings. Pane sizes are stored as fractions of the total
+    (like SceneTable's column widths) so a saved layout still applies when the
+    window opens at a different size or UI scale."""
+
+    # A drag emits splitterMoved on every mouse-move pixel and each save
+    # rewrites local.json, so coalesce a whole drag into one write.
+    _SAVE_DELAY_MS = 300
+
+    def __init__(self, orientation, key):
+        super().__init__(orientation)
+        self._key = key
+        self._fractions = get_splitter_sizes(key)
+
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(self._SAVE_DELAY_MS)
+        self._save_timer.timeout.connect(self._save)
+        self.splitterMoved.connect(lambda *_: self._save_timer.start())
+
+    def _save(self):
+        sizes = self.sizes()
+        total = sum(sizes)
+        if total <= 0:
+            return
+        self._fractions = [s / total for s in sizes]
+        set_splitter_sizes(self._key, self._fractions)
+
+    def _pinned_extent(self, i):
+        """Pane i's fixed size along this splitter's orientation, or None if it
+        is free to resize. The shared button tray is pinned this way, and a band
+        that must stay the same height cannot be sized from a fraction of a
+        window that changes."""
+        w = self.widget(i)
+        if w is None:
+            return None
+        if self.orientation() == Qt.Orientation.Vertical:
+            lo, hi = w.minimumHeight(), w.maximumHeight()
+        else:
+            lo, hi = w.minimumWidth(), w.maximumWidth()
+        return lo if lo == hi else None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Reapplied on every resize, not just the first: the first one arrives
+        # before the window has its real geometry, and stretch factors would
+        # then pull the restored split back toward an even one as the window
+        # grew to its final size. Once saved, the fraction is what this splitter
+        # goes by, and only a drag changes it. Same rule as SceneTable's
+        # column widths.
+        if not self._fractions:
+            return
+        if len(self._fractions) != self.count():
+            self._fractions = None  # pane count changed since this was saved
+            return
+        total = sum(self.sizes())
+        if total <= 0:
+            return
+
+        # Pinned panes keep their own size and the free panes divide what is
+        # left, their saved fractions renormalized over just that remainder.
+        # Handing a pinned pane its fraction instead would leave Qt to clamp it
+        # and hand the difference back on some rule of its own, drifting the
+        # free panes off the split the user actually dragged.
+        pinned = {i: e for i in range(self.count())
+                  if (e := self._pinned_extent(i)) is not None}
+        free = [i for i in range(self.count()) if i not in pinned]
+        if not free:
+            return
+        free_total = total - sum(pinned.values())
+        free_sum = sum(self._fractions[i] for i in free)
+        if free_total <= 0 or free_sum <= 0:
+            return
+
+        sizes = [0] * self.count()
+        for i, extent in pinned.items():
+            sizes[i] = extent
+        for i in free:
+            sizes[i] = max(1, int(free_total * self._fractions[i] / free_sum))
+        sizes[free[-1]] += total - sum(sizes)  # absorb rounding in the last free pane
+        self.setSizes(sizes)
+
+
 def make_button_tray():
     """Return a fixed-height QWidget containing an HBoxLayout for context-sensitive buttons."""
     tray = QWidget()
@@ -204,21 +293,37 @@ def clear_tray(tray):
 SCENE_ACTIONS = {
     'open_roi':      ("Open in ROI Studio", 'act_open_roi'),
     'open_notebook': ("Open in Notebook",   'act_open_notebook'),
-    'notes':         ("See Notes",          'act_notes'),
-    # Same action and same dialog as 'notes'. In a reviewable context that
-    # dialog also carries Approve/Kick Back (via _review_callbacks), so the
-    # button is labelled for what it is there — reviewing, not just reading.
-    'review':        ("Review Scene",       'act_notes'),
+    'open_folder':   ("Open File Location", 'act_open_folder'),
+    # Opens the Review dialog. _review_callbacks() decides from the table and
+    # status whether it can also approve or kick back, so one key serves every tray.
+    'notes':         ("Review",             'act_notes'),
     'science_notes': ("Science Notes",      'act_science_notes'),
     'flag':          ("Flag Scene",         'act_flag'),
     'summary_slide': ("Summary Slide",      'act_summary_slide'),
 }
 
 # The full set, in the order it should appear in a tray.
-SCENE_BUTTONS = ('open_roi', 'open_notebook', 'notes', 'science_notes', 'flag')
+SCENE_BUTTONS = ('notes', 'open_roi', 'open_notebook', 'open_folder', 'science_notes', 'flag')
 
-# The same set for a table whose selected scene can be acted on.
-REVIEW_BUTTONS = ('open_roi', 'open_notebook', 'review', 'science_notes', 'flag')
+# Keyboard shortcuts: key sequence -> the SCENE_ACTIONS it runs, in order.
+# Adding one is one line here.
+# Keyed by sequence rather than by action so one key can run several actions.
+# Bare letters rather than Ctrl combinations, which the dashboard can afford
+# because it has no text entry of its own - every input it opens is a modal
+# dialog in a window of its own, where these do not fire. The cost is that Qt
+# hands a shortcut the keystroke before the focused widget sees it, so these
+# letters no longer reach a table's type-to-jump-to-row search.
+SCENE_SHORTCUTS = {
+    'R': ('open_roi',),
+    'N': ('notes',),
+    'S': ('summary_slide',),
+    'E': ('summary_slide', 'notes'),
+}
+
+
+def shortcut_keys_for(action_key):
+    """Every key that runs `action_key`, for labelling its button."""
+    return [seq for seq, actions in SCENE_SHORTCUTS.items() if action_key in actions]
 
 
 def make_section(label_text, table, tray=None, count_fn=None):
@@ -505,10 +610,12 @@ class NotesDialog(SizePersistentDialog):
         if self._on_kick_back is not None:
             kick_back_btn = QPushButton("Kick Back")
             kick_back_btn.clicked.connect(self._on_kick_back_clicked)
+            color_button(kick_back_btn)
             btn_layout.addWidget(kick_back_btn)
         if self._on_approve is not None:
             approve_btn = QPushButton("Approve")
             approve_btn.clicked.connect(self._on_approve_clicked)
+            color_button(approve_btn)
             btn_layout.addWidget(approve_btn)
         btn_layout.addWidget(add_btn)
         btn_layout.addWidget(close_btn)
@@ -710,8 +817,8 @@ class ChangePasswordDialog(SizePersistentDialog):
             QMessageBox.warning(self, "Incorrect", "Current password is incorrect.")
             return
         new_pw = self._new.text()
-        if len(new_pw) < 6:
-            QMessageBox.warning(self, "Too Short", "New password must be at least 6 characters.")
+        if len(new_pw) < 4:
+            QMessageBox.warning(self, "Too Short", "New password must be at least 4 characters.")
             return
         if new_pw != self._confirm.text():
             QMessageBox.warning(self, "Mismatch", "New passwords do not match.")
@@ -875,7 +982,7 @@ class StatsDialog(SizePersistentDialog):
         layout = QVBoxLayout(self)
 
         if user['role'] == Role.SUPERVISOR:
-            self._build_tabs(layout, conn)
+            self._build_tabs(layout, conn, user)
         else:
             self._build_own(layout, conn, user['id'])
 
@@ -956,12 +1063,16 @@ class StatsDialog(SizePersistentDialog):
         item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return item
 
-    def _build_tabs(self, layout, conn):
+    def _build_tabs(self, layout, conn, user):
         all_analyst_stats = [
             (u, s) for u, s in get_all_user_stats(conn)
             if u['role'] != Role.SUPERVISOR and 'test' not in u['username'].lower()
         ]
         all_supervisor_stats = get_all_supervisor_stats(conn)
+        coverage = [
+            row for row in get_supervisor_analyst_coverage(conn, user['id'])
+            if 'test' not in row['username'].lower()
+        ]
 
         tabs = QTabWidget()
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'today', "Today's"), "Analyst Daily")
@@ -969,6 +1080,7 @@ class StatsDialog(SizePersistentDialog):
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'week', "This Week's"), "Analyst Weekly")
         tabs.addTab(self._build_analyst_period_tab(all_analyst_stats, 'total', "All-Time"), "Analyst Total")
         tabs.addTab(self._build_supervisor_tab(all_supervisor_stats), "All Supervisor Stats")
+        tabs.addTab(self._build_coverage_tab(coverage), "My Analyst Coverage")
         layout.addWidget(tabs)
         self.setMinimumWidth(680)
         self.resize(720, 480)
@@ -984,7 +1096,7 @@ class StatsDialog(SizePersistentDialog):
 
         extra_metrics = self._ANALYST_TOTAL_ONLY_METRICS if period == 'total' else []
         headers = (["Username"] + [name for name, _ in self._ANALYST_METRICS]
-                   + [name for name, _ in extra_metrics])
+                    + [name for name, _ in extra_metrics])
         tbl = self._make_table(len(all_stats), headers)
 
         for i, (user, stats) in enumerate(all_stats):
@@ -993,6 +1105,29 @@ class StatsDialog(SizePersistentDialog):
                 tbl.setItem(i, col, self._num_item(stats[f'{key}_{period}']))
             for col, (_, key) in enumerate(extra_metrics, start=1 + len(self._ANALYST_METRICS)):
                 tbl.setItem(i, col, self._num_item(stats[f'{key}_total']))
+
+        tbl.setSortingEnabled(True)
+        tbl.resizeColumnsToContents()
+        tbl.resizeRowsToContents()
+        v.addWidget(tbl)
+        return container
+
+    _COVERAGE_COLUMNS = [
+        ("In Progress",     'in_progress'),
+        ("Approved",        'approved_mine'),
+        ("Approved (all)",  'approved_any'),
+    ]
+
+    def _build_coverage_tab(self, coverage):
+        container = QWidget()
+        v = QVBoxLayout(container)
+        headers = ["Analyst"] + [name for name, _ in self._COVERAGE_COLUMNS]
+        tbl = self._make_table(len(coverage), headers)
+
+        for i, row in enumerate(coverage):
+            tbl.setItem(i, 0, QTableWidgetItem(row['username']))
+            for col, (_, key) in enumerate(self._COVERAGE_COLUMNS, start=1):
+                tbl.setItem(i, col, self._num_item(row[key]))
 
         tbl.setSortingEnabled(True)
         tbl.resizeColumnsToContents()
@@ -1477,6 +1612,42 @@ class Dashboard(QMainWindow):
         QApplication.clipboard().setText(str(sol_num))
         QDesktopServices.openUrl(QUrl(url))
 
+    def handle_open_folder(self, scene_id):
+        """Open this scene's saved ROI Studio folder in the system file browser
+        (Explorer on Windows, Finder on macOS).
+
+        Handed to the OS via QDesktopServices so there is no platform branch to
+        keep in sync. Scenes with no findable folder are a known state on the
+        drive, so rather than dead-ending, fall back to the sol's working/
+        folder and say why."""
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Database Error", f"Could not load scene: {e}")
+            return
+        if not scene:
+            return
+
+        folder = find_scene_folder(PANCAM_PATH, scene)
+        if not folder:
+            rover, sol, _, _ = parse_scene_key(scene['scene_key'])
+            fallback = (kind_path(PANCAM_PATH, rover, sol, FolderKind.WORKING)
+                        if rover and sol else None)
+            if not fallback or not os.path.isdir(fallback):
+                QMessageBox.warning(
+                    self, "Folder Not Found",
+                    f"No saved ROI Studio folder for '{scene['name']}', and its sol "
+                    f"folder could not be reached on the drive."
+                )
+                return
+            QMessageBox.information(
+                self, "No Saved Folder",
+                f"No saved ROI Studio folder for '{scene['name']}'.\n\n"
+                f"Opening the sol's working folder instead:\n{fallback}"
+            )
+            folder = fallback
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     # ── Generic per-table scene actions ─────────────────────────────────
     # Each takes the table whose selection it acts on. Trays bind them to a
     # specific table via build_tray(), so a dashboard never defines its own
@@ -1504,23 +1675,28 @@ class Dashboard(QMainWindow):
         layout = tray.layout()
         assert layout is not None
         for entry in actions:
+            keys = []
             if isinstance(entry, str):
                 label, attr = SCENE_ACTIONS[entry]
                 slot = self._bind(attr, table)
+                keys = shortcut_keys_for(entry)
             else:
                 label, handler = entry
                 slot = getattr(self, handler)
             btn = QPushButton(label)
             btn.clicked.connect(slot)
+            if keys:
+                btn.setToolTip(f"{label}  ({', '.join(keys)})")
+            color_button(btn)
             layout.addWidget(btn)
 
-    # ── The shared bottom tray ──────────────────────────────────────────
+    # ── The shared tray ─────────────────────────────────────────────────
     # Both dashboards show several scene tables at once. Rather than give each
     # one its own tray (which duplicated "Open in ROI Studio" six times on the
-    # analyst dashboard alone), all buttons live in a single tray at the bottom
-    # of the window and act on whichever table currently holds the selection.
-    # Selecting in one table clears the others, so "the selected scene" is
-    # never ambiguous. See ADR-021.
+    # analyst dashboard alone), all buttons live in a single tray that acts on
+    # whichever table currently holds the selection. Selecting in one table
+    # clears the others, so "the selected scene" is never ambiguous. The tray
+    # sits between the two rows of tables rather than under them. See ADR-021.
 
     def make_tray_bar(self, sections):
         """Build the shared tray and wire up single-table selection.
@@ -1528,11 +1704,12 @@ class Dashboard(QMainWindow):
         `sections` is a sequence of (table, title, actions), where `actions` is
         either a list of build_tray() entries or a zero-argument callable
         returning one — the latter for tables whose buttons depend on the
-        selected row's status. Returns the widget to place at the bottom of the
-        dashboard, below the tables."""
+        selected row's status. Returns the widget both dashboards drop into
+        their vertical splitter, between the two rows of tables."""
         self._sections = list(sections)
         self._active_table = None
         self._syncing = False
+        self._install_scene_shortcuts()
 
         self.shared_tray = make_button_tray()
         self.tray_label = QLabel()
@@ -1543,9 +1720,24 @@ class Dashboard(QMainWindow):
                 lambda t=table: self._on_table_selection_changed(t)
             )
 
+        # Refresh lives on the tray row rather than under the tables: with the
+        # tray in the middle of the window there is no longer a button strip at
+        # the bottom for it to sit in. It is the one tray button that acts on
+        # the dashboard rather than on the selected scene, so it is kept out of
+        # shared_tray (which build_tray() clears and rebuilds on every
+        # selection) and right-aligned, away from the scene actions.
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.clicked.connect(self.refresh_task_list)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self.shared_tray, stretch=1)
+        row_layout.addWidget(self.refresh_button)
+
         bar = QWidget()
         # A plain QWidget is vertically Preferred, which lets it share surplus
-        # window height with the tables above it — the tray grew on resize and
+        # window height with the tables around it — the tray grew on resize and
         # the tables didn't. Fixed pins the bar to its hint (label + tray), so
         # every extra pixel goes to the tables. The dashboard must also give
         # its table splitter stretch=1; a horizontal QSplitter is only
@@ -1555,10 +1747,35 @@ class Dashboard(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(self.tray_label)
-        layout.addWidget(self.shared_tray)
+        layout.addWidget(row)
+        # A size policy alone is not enough once the bar sits inside a
+        # QSplitter: a splitter sizes its panes by min/max, not by policy, and
+        # would happily stretch or squash the tray. Pinning the height is what
+        # makes the tray a fixed band between the two rows of tables.
+        bar.setFixedHeight(max(bar.sizeHint().height(), bar.minimumSizeHint().height()))
         self.update_shared_tray()
         self.tray_bar = bar
         return bar
+
+    def make_rows_splitter(self, key, top, tray_bar, bottom, weights=(1, 1)):
+        """Stack a row of tables, the shared tray, and a second row of tables in
+        one vertical splitter, saved under `key`. `weights` is the (top, bottom)
+        stretch used until the user drags a handle.
+
+        The tray sits between the rows rather than under them, so it stays near
+        the tables on both sides instead of drifting a full window-height away
+        from whichever one the user is working in. It is pinned to its own
+        height and cannot be collapsed, so both handles resize only the tables
+        around it. Returns the widget to add to main_content_layout."""
+        rows = PersistentSplitter(Qt.Orientation.Vertical, key)
+        rows.addWidget(top)
+        rows.addWidget(tray_bar)
+        rows.addWidget(bottom)
+        rows.setStretchFactor(0, weights[0])
+        rows.setStretchFactor(1, 0)
+        rows.setStretchFactor(2, weights[1])
+        rows.setCollapsible(1, False)
+        return rows
 
     def _on_table_selection_changed(self, table):
         """Make `table` the active one and clear every other table's selection.
@@ -1584,6 +1801,28 @@ class Dashboard(QMainWindow):
         self._active_table = table
         self.update_shared_tray()
 
+    def _actions_for(self, table):
+        """The tray entries for `table`, resolving the callable form used by
+        tables whose buttons depend on the selected row's status."""
+        actions = next((a for tbl, _, a in getattr(self, '_sections', []) if tbl is table), [])
+        return actions() if callable(actions) else actions
+
+    def _install_scene_shortcuts(self):
+        for sequence in SCENE_SHORTCUTS:
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(
+                lambda s=sequence: self._run_scene_shortcut(s)
+            )
+
+    def _run_scene_shortcut(self, sequence):
+        table = self._active_table
+        if table is None or not table.selectedItems():
+            return
+        offered = [a for a in self._actions_for(table) if isinstance(a, str)]
+        for action_key in SCENE_SHORTCUTS[sequence]:
+            if action_key in offered:
+                getattr(self, SCENE_ACTIONS[action_key][1])(table)
+
     def update_shared_tray(self):
         """Rebuild the shared tray for the active table's current selection."""
         table = self._active_table
@@ -1595,13 +1834,11 @@ class Dashboard(QMainWindow):
             self.tray_label.setText("No scene selected")
             return
         title = next(t for tbl, t, _ in self._sections if tbl is table)
-        actions = next(a for tbl, _, a in self._sections if tbl is table)
-        if callable(actions):
-            actions = actions()
+        actions = self._actions_for(table)
         rows = len(self.selected_ids(table))
         name = self._scene_name_from(table) if rows == 1 else f"{rows} scenes"
-        # The label names the table as well as the scene: with the tray at the
-        # bottom of the window, and some tables behind an unselected tab, the
+        # The label names the table as well as the scene: the tray serves tables
+        # on both sides of it, and some sit behind an unselected tab, so the
         # highlighted row itself may not be visible.
         self.tray_label.setText(f"Selected: {name}  —  {title}")
         self.build_tray(self.shared_tray, table, actions, enabled=True)
@@ -1621,6 +1858,11 @@ class Dashboard(QMainWindow):
         scene_id = self.selected_id(table)
         if scene_id is not None:
             self.handle_open_notebook(scene_id)
+
+    def act_open_folder(self, table):
+        scene_id = self.selected_id(table)
+        if scene_id is not None:
+            self.handle_open_folder(scene_id)
 
     def act_notes(self, table):
         scene_id = self.selected_id(table)

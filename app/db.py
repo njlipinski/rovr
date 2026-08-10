@@ -3,7 +3,7 @@
 import sqlite3
 import time
 from config import DB_PATH
-from app.models import Stage, Decision, SceneStatus
+from app.models import Stage, Decision, SceneStatus, Role
 
 
 _RETRY_DELAY = 0.1
@@ -769,6 +769,36 @@ def get_all_user_stats(conn):
         conn, "SELECT id, username, role FROM users WHERE active=1 ORDER BY username"
     )
     return [(u, get_user_stats(conn, u['id'])) for u in users]
+
+
+def get_supervisor_analyst_coverage(conn, supervisor_id):
+    """One row per active analyst: how much of that analyst's work this
+    supervisor is carrying, for spreading their time across the team.
+
+    'in_progress' and 'approved_mine' count only scenes stamped with this
+    supervisor; 'approved_any' counts the analyst's approved scenes whoever
+    signed them off, so the pair shows whether a low share means the analyst is
+    being missed or simply covered by someone else. LEFT JOIN so an analyst with
+    no scenes still gets a row of zeros rather than dropping out of the list."""
+    return _read_all(
+        conn,
+        """
+        SELECT u.id, u.username,
+               SUM(CASE WHEN s.supervisor_id = ? AND s.status IN (?, ?)
+                        THEN 1 ELSE 0 END) AS in_progress,
+               SUM(CASE WHEN s.supervisor_id = ? AND s.status = ?
+                        THEN 1 ELSE 0 END) AS approved_mine,
+               SUM(CASE WHEN s.status = ? THEN 1 ELSE 0 END) AS approved_any
+        FROM users u
+        LEFT JOIN scenes s ON s.owner_id = u.id
+        WHERE u.active = 1 AND u.role = ?
+        GROUP BY u.id, u.username
+        ORDER BY u.username
+        """,
+        (supervisor_id, SceneStatus.NEEDS_REVISION, SceneStatus.IN_SUPERVISOR_REVIEW,
+         supervisor_id, SceneStatus.APPROVED,
+         SceneStatus.APPROVED,
+         Role.ANALYST))
 
 
 def get_all_supervisor_stats(conn):

@@ -1,9 +1,9 @@
 """analyst dashboard — work queue, peer review pool, and scene pool"""
-from PyQt6.QtWidgets import QPushButton, QSplitter, QTabWidget, QMessageBox, QTableWidgetItem
+from PyQt6.QtWidgets import QTabWidget, QMessageBox, QTableWidgetItem
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
-    Dashboard, SCENE_BUTTONS,
+    Dashboard, SCENE_BUTTONS, PersistentSplitter,
     make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item,
 )
@@ -24,23 +24,22 @@ from app.models import SceneStatus, Decision
 # own (label, handler name) pairs.
 _MY_QUEUE_BUTTONS = {
     SceneStatus.CLAIMED: [
-        'open_roi', 'open_notebook',
         ("Submit", "handle_submit"),
-        'notes', 'science_notes', 'flag',
+        'notes', 'open_roi', 'open_notebook', 'open_folder',
+        'science_notes', 'flag',
         ("Release", "handle_release"),
     ],
     SceneStatus.IN_REVIEW: [
-        'open_roi', 'open_notebook',
         ("Approve", "handle_approve"),
-        # 'review' opens the notes dialog with Approve/Kick Back wired up, so
-        # there is no separate Kick Back button here. See ADR-022.
-        'review', 'science_notes', 'flag',
+        'notes', 'open_roi', 'open_notebook', 'open_folder',
+        'science_notes', 'flag',
         ("Release", "handle_release"),
     ],
     SceneStatus.NEEDS_REVISION: [
-        'open_roi', 'open_notebook',
         ("Submit", "handle_submit"),
-        'notes', 'science_notes', 'flag',
+        'notes', 
+        'open_roi', 'open_notebook', 'open_folder',
+        'science_notes', 'flag',
     ],
 }
 
@@ -93,26 +92,18 @@ class AnalystDashboard(Dashboard):
         pool_tabs.addTab(completed_section, "My Completed Scenes")
         pool_tabs.addTab(all_scenes_section, "All Scenes")
 
-        left_splitter = QSplitter(Qt.Orientation.Vertical)
-        left_splitter.addWidget(my_section)
-        left_splitter.addWidget(in_progress_section)
-        left_splitter.setStretchFactor(0, 1)
-        left_splitter.setStretchFactor(1, 1)
+        # Top row: the analyst's own work. Bottom row: what they can pick up.
+        top_row = PersistentSplitter(Qt.Orientation.Horizontal, 'analyst.top')
+        top_row.addWidget(my_section)
+        top_row.addWidget(in_progress_section)
+        top_row.setStretchFactor(0, 1)
+        top_row.setStretchFactor(1, 1)
 
-        right_splitter = QSplitter(Qt.Orientation.Vertical)
-        right_splitter.addWidget(review_section)
-        right_splitter.addWidget(pool_tabs)
-        right_splitter.setStretchFactor(0, 1)
-        right_splitter.setStretchFactor(1, 1)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left_splitter)
-        splitter.addWidget(right_splitter)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-
-        refresh_button = QPushButton("Refresh")
-        refresh_button.clicked.connect(self.refresh_task_list)
+        bottom_row = PersistentSplitter(Qt.Orientation.Horizontal, 'analyst.bottom')
+        bottom_row.addWidget(review_section)
+        bottom_row.addWidget(pool_tabs)
+        bottom_row.setStretchFactor(0, 1)
+        bottom_row.setStretchFactor(1, 1)
 
         tray_bar = self.make_tray_bar([
             (self.my_queue_table,     "My Work Queue",         self._my_queue_actions),
@@ -122,16 +113,16 @@ class AnalystDashboard(Dashboard):
             (self.scene_pool_table,   "Unclaimed Scenes",
              [("Claim Scene", "handle_claim_from_pool"), 'flag']),
             (self.completed_table,    "My Completed Scenes",
-             ['open_roi', 'open_notebook', 'notes', 'science_notes']),
+             ['open_roi', 'open_notebook', 'open_folder', 'notes', 'science_notes']),
             (self.all_scenes_table,   "All Scenes",            SCENE_BUTTONS),
         ])
 
-        # stretch=1: all surplus window height goes to the tables. Without it
-        # the tray bar below shares the growth, since a horizontal QSplitter is
-        # only vertically Preferred.
-        self.main_content_layout.addWidget(splitter, stretch=1)
-        self.main_content_layout.addWidget(tray_bar)
-        self.main_content_layout.addWidget(refresh_button)
+        # stretch=1: all surplus window height goes to the tables, none of it to
+        # the pinned tray band in the middle.
+        self.main_content_layout.addWidget(
+            self.make_rows_splitter('analyst.rows', top_row, tray_bar, bottom_row),
+            stretch=1,
+        )
 
         self.refresh_task_list()
 
