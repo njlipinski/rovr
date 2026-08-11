@@ -57,12 +57,66 @@ jobs:
       - name: Build app bundle
         run: python -m PyInstaller rovr.spec
 
+      # Asset names use the exact strings `uname -m` reports (arm64 / x86_64) so
+      # launch_rovr.command resolves its own build with no lookup table.
       - name: Zip app bundle
-        run: cd dist && zip -r rovr-mac.zip rovr.app
+        run: cd dist && zip -r rovr-mac-arm64.zip rovr.app
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/rovr-mac.zip
+            dist/rovr-mac-arm64.zip
             launch_rovr.command
+
+  build-macos-intel:
+    # Intel (x86_64) Macs cannot run the arm64 bundle at all: macOS reports
+    # "incorrect executable format" and Rosetta does not help in that
+    # direction. A universal2 build is not an option because PyInstaller
+    # requires every bundled wheel to be universal2 and the PyQt6 wheels on
+    # PyPI are single-architecture, so Intel needs its own job.
+    runs-on: macos-15-intel
+    env:
+      # Floor for what the bundle will launch on.
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: Install dependencies
+        run: pip install -r setup/requirements.txt pyinstaller
+
+      - name: Verify interpreter is x86_64
+        # setup-python silently falling back to an arm64 build would produce an
+        # arm64 bundle under an Intel filename, which is the exact failure this
+        # job exists to prevent.
+        run: |
+          ARCH=$(python -c "import platform; print(platform.machine())")
+          echo "Interpreter arch: $ARCH"
+          [ "$ARCH" = "x86_64" ] || { echo "Expected x86_64, got $ARCH"; exit 1; }
+
+      - name: Write version module
+        run: echo "__version__ = '$(cat VERSION)'" > app/version.py
+
+      - name: Build app bundle
+        run: python -m PyInstaller rovr.spec
+
+      - name: Verify bundle is x86_64
+        run: |
+          file dist/rovr.app/Contents/MacOS/rovr
+          file dist/rovr.app/Contents/MacOS/rovr | grep -q x86_64
+
+      # The bundle inside keeps the name rovr.app so launch_rovr.command finds
+      # it; only the zip name distinguishes the architecture, using the exact
+      # string `uname -m` reports on Intel.
+      - name: Zip app bundle
+        run: cd dist && zip -r rovr-mac-x86_64.zip rovr.app
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/rovr-mac-x86_64.zip

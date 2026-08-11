@@ -28,10 +28,14 @@ def _try_update():
         return
     try:
         from app.version import __version__ as current_ver
+        from app.paths import EXE_NAME, VERSION_FILE, rovr_dir
         from config import PANCAM_PATH
 
-        source_exe   = os.path.join(PANCAM_PATH, 'rovr.exe')
-        version_file = os.path.join(PANCAM_PATH, 'rovr-version.txt')
+        # Prefers PANCAM_PATH/ROVR, falls back to the Pancam root for installs
+        # staged under the older flat layout.
+        dist_dir     = rovr_dir(PANCAM_PATH)
+        source_exe   = os.path.join(dist_dir, EXE_NAME)
+        version_file = os.path.join(dist_dir, VERSION_FILE)
         local_exe    = sys.executable
 
         # Skip if we're already running from the R drive copy

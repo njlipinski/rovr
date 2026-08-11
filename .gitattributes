@@ -1,0 +1,6 @@
+# Shell scripts must keep LF endings even when checked out on Windows.
+# core.autocrlf=true would otherwise hand Windows a CRLF working copy, and a
+# CRLF launcher fails on macOS with "bad interpreter: /bin/bash^M" because the
+# carriage return becomes part of the interpreter path.
+*.command text eol=lf
+*.sh      text eol=lf

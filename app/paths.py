@@ -44,6 +44,32 @@ SUMMARY_FORMAT = 'pdf'
 SUMMARY_SUFFIX = '_summary.pdf'
 
 
+# ROVR's own distribution files (the exe, the Mac bundles, the launcher, the
+# version marker) live in this subfolder so they stay out of the scene data at
+# the Pancam root. PANCAM_PATH itself must keep pointing at the root, since
+# every scene path is built from it.
+ROVR_DIR     = 'ROVR'
+VERSION_FILE = 'rovr-version.txt'
+EXE_NAME     = 'rovr.exe'
+
+
+def rovr_dir(pancam_path):
+    """Directory holding ROVR's distribution files.
+
+    Prefers PANCAM_PATH/ROVR and falls back to PANCAM_PATH, so installs
+    predating the subfolder keep updating without a config change.
+
+    The test is the version file rather than the directory itself, so an empty
+    or half-staged subfolder is never mistaken for a complete one. The deploy
+    script writes that file last for exactly this reason: its presence means
+    everything else is already in place.
+    """
+    candidate = os.path.join(pancam_path, ROVR_DIR)
+    if os.path.isfile(os.path.join(candidate, VERSION_FILE)):
+        return candidate
+    return pancam_path
+
+
 def sol_dir_name(sol):
     """Zero-padded sol folder name (no 'sol' prefix), e.g. sol_dir_name(21) -> '0021'."""
     return f"{int(sol):04d}"
