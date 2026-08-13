@@ -4,6 +4,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
@@ -24,6 +25,7 @@ from app.paths import (
 from app.slides import build_summary_slide, slide_is_current
 from app.local_settings import (
     get_roi_studio_path, set_roi_studio_path,
+    get_roi_studio_python, set_roi_studio_python,
     get_column_widths, set_column_widths,
     get_dark_mode, set_dark_mode,
     get_ui_scale, set_ui_scale,
@@ -34,7 +36,7 @@ from app.local_settings import (
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme, color_button
 
 # Preset options shown in the ☰ -> UI Scale menu. Applied via QT_SCALE_FACTOR
-# at next launch (Qt reads it once, at startup) — not live.
+# at next launch (Qt reads it once, at startup)
 UI_SCALE_PRESETS = (1.0, 1.25, 1.5, 1.75, 2.0)
 from app.db import (
     get_scene_thread, add_note, update_note, delete_note, get_scene_by_id,
@@ -126,7 +128,7 @@ class SceneTable(QTableWidget):
             return
         idx = vis.index(logical)
         if idx >= len(vis) - 1:
-            # No right neighbor — revert
+            # No right neighbor -- revert
             self._in_resize = True
             try:
                 self.setColumnWidth(logical, old_size)
@@ -250,7 +252,7 @@ class PersistentSplitter(QSplitter):
         # and hand the difference back on some rule of its own, drifting the
         # free panes off the split the user actually dragged.
         pinned = {i: e for i in range(self.count())
-                  if (e := self._pinned_extent(i)) is not None}
+                    if (e := self._pinned_extent(i)) is not None}
         free = [i for i in range(self.count()) if i not in pinned]
         if not free:
             return
@@ -491,17 +493,36 @@ _DECISION_LABEL = {
 }
 
 
+# How SQLite's datetime() renders a timestamp, and how ROVR displays one.
+_TS_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+
+def local_ts(value):
+    """Render a stored timestamp in the viewer's local time.
+    Timestamps are stored UTC so that rows from users in different zones sort in
+    real order."""
+    if not value:
+        return value
+    try:
+        stamp = datetime.strptime(str(value), _TS_FORMAT)
+    except ValueError:
+        return value
+    # astimezone() with no argument uses the system zone, so this needs no
+    # timezone database of its own.
+    return stamp.replace(tzinfo=timezone.utc).astimezone().strftime(_TS_FORMAT)
+
+
 def _format_thread_row(row):
     """Format one row from get_scene_thread (a note or a review entry)."""
     tag = 'Note' if row['type'] == 'note' else _DECISION_LABEL.get(row['decision'], row['decision'])
-    header = f"[{row['timestamp']}]  {row['author_name']}  ({tag})"
+    header = f"[{local_ts(row['timestamp'])}]  {row['author_name']}  ({tag})"
     content = row['content']
     return f"{header}\n{content}" if content else header
 
 
 def _format_science_note_row(row):
     """Format one row from get_science_notes."""
-    header = f"[{row['timestamp']}]  {row['author_name']}"
+    header = f"[{local_ts(row['timestamp'])}]  {row['author_name']}"
     content = row['content']
     return f"{header}\n{content}" if content else header
 
@@ -510,6 +531,45 @@ def _format_science_notes_for_roi_studio(thread):
     """Concatenate a science notes thread (rows from get_science_notes) into the
     single metadata string ROI Studio's --notes argument expects."""
     return "\n\n---\n\n".join(_format_science_note_row(row) for row in thread)
+
+
+# Virtualenv layouts checked beside a ROI Studio checkout's entry point, in the
+# order they are tried. Windows puts the interpreter in Scripts/, everyone else
+# in bin/.
+_VENV_DIRS = ('.venv', 'venv', 'env')
+_VENV_PYTHON = (('Scripts', 'python.exe'),) if sys.platform == 'win32' else \
+                (('bin', 'python3'), ('bin', 'python'))
+
+
+def find_venv_python(script_path):
+    """Return the interpreter of a virtualenv sitting beside a ROI Studio
+    checkout's entry point, or None. Looks in the script's own directory and its
+    parent, so both repo/main.py and repo/src/main.py find repo/.venv."""
+    first = os.path.dirname(os.path.abspath(script_path))
+    roots = [first, os.path.dirname(first)]
+    for root in roots:
+        for venv in _VENV_DIRS:
+            for parts in _VENV_PYTHON:
+                candidate = os.path.join(root, venv, *parts)
+                if os.path.exists(candidate):
+                    return candidate
+    return None
+
+
+def roi_studio_command(path, args, interpreter=None):
+    """Build the (command, cwd) that launches ROI Studio for a stored path.
+
+    Three shapes are supported. A source checkout's .py entry point runs under
+    the interpreter that has ROI Studio's dependencies, from the repo root so
+    its relative imports and asset paths resolve. A macOS .app is a directory,
+    not a binary, so it needs `open` the way Finder does. Anything else is run
+    directly. cwd is None when the launch does not need one.
+    """
+    if path.endswith('.py'):
+        return [interpreter, path] + args, os.path.dirname(os.path.abspath(path))
+    if sys.platform == 'darwin' and path.rstrip('/').endswith('.app'):
+        return ['open', '-n', '-a', path, '--args'] + args, None
+    return [path] + args, None
 
 
 class NotesDialog(SizePersistentDialog):
@@ -521,8 +581,8 @@ class NotesDialog(SizePersistentDialog):
     housekeeping, via get_scene_thread/add_note/update_note/delete_note) and the
     Science Notes thread (manual, scientifically-relevant notes only, via
     get_science_notes/add_science_note/update_science_note/delete_science_note).
-    Review/decision entries are never editable — reviews are an append-only
-    audit log — so edit/delete are only enabled for rows where type == 'note'.
+    Review/decision entries are never editable. Reviews are an append-only
+    audit log, so edit/delete are only enabled for rows where type == 'note'.
     """
     _size_key = 'notes'
 
@@ -541,7 +601,7 @@ class NotesDialog(SizePersistentDialog):
         this scene, so a reviewer can jump to ROI Studio without closing the note thread.
 
         on_summary_slide, if given, is a callable () -> None that opens this scene's
-        summary slide — the fast way to see the ROIs, spectra and metadata without
+        summary slide -- the fast way to see the ROIs, spectra and metadata without
         waiting for ROI Studio to start."""
         super().__init__(parent)
         self.conn = conn
@@ -1364,15 +1424,7 @@ class Dashboard(QMainWindow):
     def _run_db_read(self, fn, default=None):
         """Run fn() (a DB read), returning `default` instead of crashing if the
         shared database stayed locked for the whole read budget (see
-        db._with_read_retry).
-
-        Reads used to have no handling at all: db.py's retry wrapper covered
-        only writes, and this method's write-side twin above only ever sees
-        controller calls. So a SELECT that lost a race went straight to
-        sys.excepthook -- the "ROVR Error" crash dialog -- which is what every
-        entry in the crash log turned out to be. Reads are safe to abandon and
-        retry later, so this reports and moves on rather than re-raising.
-        """
+        db._with_read_retry)."""
         try:
             return fn()
         except sqlite3.OperationalError as e:
@@ -1387,19 +1439,19 @@ class Dashboard(QMainWindow):
 
     def run_bulk_action(self, table, action, title, *,
                         done_msg, none_msg, partial_msg, confirm_msg=None):
-        """Apply `action(scene_id)` to every selected row in `table`.
+        """Apply 'action(scene_id)' to every selected row in 'table'.
 
         Each scene is written independently, so one that is no longer eligible
         — someone else claimed it, or its status moved on since the rows were
-        drawn — raises ValueError from `controller.py` and is counted as
-        skipped instead of aborting the batch. An `action` that returns False
+        drawn — raises ValueError from 'controller.py' and is counted as
+        skipped instead of aborting the batch. An 'action' that returns False
         counts as skipped too, for controller functions that report failure
         that way rather than raising. Lock contention is different: it means
         nothing further can be written, so `_run_db_action` stops the run and
         shows its own dialog.
 
-        `done_msg`/`none_msg`/`partial_msg` are format strings taking {done}
-        and {skipped}. `confirm_msg` (taking {n}) is shown as a Yes/Cancel
+        'done_msg'/'none_msg'/'partial_msg' are format strings taking {done}
+        and {skipped}. 'confirm_msg' (taking {n}) is shown as a Yes/Cancel
         prompt first, but only when more than one row is selected — bulk
         actions that can't be undone ask; single-scene ones stay one click.
 
@@ -1540,19 +1592,51 @@ class Dashboard(QMainWindow):
         return " ".join(c.text() if c else '' for c in cells)
 
     def _prompt_for_roi_studio_path(self):
-        """Ask the user to locate ROI Studio and save the path. Returns the path, or None if cancelled."""
+        """Ask the user to locate ROI Studio and save the path. Returns the path, or None if cancelled.
+
+        The target may be a packaged build or a source checkout's main.py - the
+        filters offer both, since not everyone has a packaged ROI Studio."""
         if sys.platform == 'darwin':
-            file_filter = "Applications (*.app);;All Files (*)"
+            file_filter = "ROI Studio (*.app *.py);;All Files (*)"
         elif sys.platform == 'win32':
-            file_filter = "Executables (*.exe)"
+            file_filter = "ROI Studio (*.exe *.py);;All Files (*)"
         else:
-            file_filter = "All Files (*)"
+            file_filter = "ROI Studio (*.py);;All Files (*)"
         path, _ = QFileDialog.getOpenFileName(
             self, "Locate ROI Studio", "", file_filter
         )
         if not path:
             return None
+        # Resolve the interpreter before storing the path, so backing out of the
+        # interpreter step does not leave a checkout configured with no way to
+        # run it.
+        if path.endswith('.py') and not self._resolve_roi_studio_python(path):
+            return None
         set_roi_studio_path(path)
+        return path
+
+    def _resolve_roi_studio_python(self, script_path):
+        """Find and save the interpreter that runs a ROI Studio checkout. Uses a
+        venv beside the script if there is one, otherwise asks. Returns the
+        path, or None if cancelled."""
+        found = find_venv_python(script_path)
+        if found:
+            set_roi_studio_python(found)
+            return found
+        QMessageBox.information(
+            self, "Python Interpreter Needed",
+            "That is a ROI Studio source checkout, so ROVR needs the Python "
+            "interpreter that has its dependencies installed - usually the one "
+            "inside the checkout's virtual environment.\n\n"
+            "Locate it on the next screen."
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate Python for ROI Studio",
+            os.path.dirname(os.path.abspath(script_path)), "All Files (*)"
+        )
+        if not path:
+            return None
+        set_roi_studio_python(path)
         return path
 
     def handle_open_roi(self, scene_id):
@@ -1563,7 +1647,15 @@ class Dashboard(QMainWindow):
             if not path:
                 return
 
-        args = [path]
+        interpreter = None
+        if path.endswith('.py'):
+            interpreter = get_roi_studio_python()
+            if not interpreter or not os.path.exists(interpreter):
+                interpreter = self._resolve_roi_studio_python(path)
+                if not interpreter:
+                    return
+
+        args = []
         try:
             scene = get_scene_by_id(self.conn, scene_id)
         except Exception as e:
@@ -1581,21 +1673,16 @@ class Dashboard(QMainWindow):
             if notes_thread:
                 args += ['--notes', _format_science_notes_for_roi_studio(notes_thread)]
 
+        cmd, cwd = roi_studio_command(path, args, interpreter)
         try:
-            if sys.platform == 'darwin':
-                # .app bundles are directories — must launch via `open -n -a` like Finder does
-                subprocess.Popen(['open', '-n', '-a', path, '--args'] + args[1:])
-            else:
-                subprocess.Popen(args)
+            subprocess.Popen(cmd, cwd=cwd)
         except OSError as e:
             QMessageBox.warning(self, "Launch Failed", f"Could not open ROI Studio:\n{e}")
 
     def handle_open_notebook(self, scene_id):
         """Open the MER Analyst's Notebook to this scene's Sol Summary, and copy
         the sol number to the clipboard. The Notebook's own left-hand Sol
-        navigator can't be set via URL — it's driven by a stateful ASP.NET
-        postback, not a link — so pasting the sol there is the fastest way to
-        reach its other panels (Data Products, Mosaics, Targets, etc.)."""
+        navigator can't be set via URL."""
         try:
             scene = get_scene_by_id(self.conn, scene_id)
         except Exception as e:
@@ -1651,12 +1738,12 @@ class Dashboard(QMainWindow):
     # ── Generic per-table scene actions ─────────────────────────────────
     # Each takes the table whose selection it acts on. Trays bind them to a
     # specific table via build_tray(), so a dashboard never defines its own
-    # per-table wrapper — which is what made these actions easy to shadow.
+    # per-table wrapper, which is what made these actions easy to shadow.
 
     def _bind(self, attr, table):
         """Bind a per-table action to a slot safe for QPushButton.clicked.
 
-        clicked emits a `checked` bool. Swallowing it here keeps the action
+        clicked emits a 'checked' bool. Swallowing it here keeps the action
         signatures clean and stops the extra argument from reaching them."""
         action = getattr(self, attr)
         return lambda *_: action(table)
@@ -1737,10 +1824,9 @@ class Dashboard(QMainWindow):
 
         bar = QWidget()
         # A plain QWidget is vertically Preferred, which lets it share surplus
-        # window height with the tables around it — the tray grew on resize and
-        # the tables didn't. Fixed pins the bar to its hint (label + tray), so
-        # every extra pixel goes to the tables. The dashboard must also give
-        # its table splitter stretch=1; a horizontal QSplitter is only
+        # window height with the tables around it. Fixed pins the bar to its hint 
+        # (label + tray), so every extra pixel goes to the tables. The dashboard 
+        # must also give its table splitter stretch=1; a horizontal QSplitter is only
         # vertically Preferred and won't claim that space on its own.
         bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(bar)

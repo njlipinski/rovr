@@ -6,6 +6,10 @@ from config import DB_PATH
 from app.models import Stage, Decision, SceneStatus, Role
 
 
+# Timestamps are stored UTC.  Always datetime('now'), never 'localtime', since
+# every client shares one DB and local stamps from different zones sort wrong.
+# Convert for display only (local_ts() in app/ui/dashboard.py). Rows predating
+# this hold local time and display shifted.
 _RETRY_DELAY = 0.1
 
 # A blocked attempt costs roughly the connection's busy timeout (see
@@ -95,6 +99,14 @@ def _read_all(conn, sql, params=()):
     return _with_read_retry(lambda: conn.execute(sql, params).fetchall())
 
 
+def _read_scalar(conn, sql, params=(), default=0):
+    """First column of a single-row read (COUNT, MAX, ...), retried while the
+    database is locked. `default` covers the no-row case, which an aggregate
+    never hits but a plain SELECT can."""
+    row = _read_one(conn, sql, params)
+    return default if row is None else row[0]
+
+
 # ── User functions ────────────────────────────────────────────────────────────
 
 def get_user_by_username(conn, username):
@@ -136,22 +148,22 @@ def deactivate_user(conn, user_id):
         conn.execute("""
             UPDATE scenes
             SET status = 0, owner_id = NULL, claimed_by = NULL,
-                updated_at = datetime('now', 'localtime')
+                updated_at = datetime('now')
             WHERE owner_id = ? AND status IN (1, 4)
         """, (user_id,))
         conn.execute("""
             UPDATE scenes
-            SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            SET status = 2, claimed_by = NULL, updated_at = datetime('now')
             WHERE owner_id = ? AND status = 3
         """, (user_id,))
         conn.execute("""
             UPDATE scenes
-            SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            SET status = 2, claimed_by = NULL, updated_at = datetime('now')
             WHERE claimed_by = ? AND status = 3
         """, (user_id,))
         conn.execute("""
             UPDATE scenes
-            SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime')
+            SET status = 5, claimed_by = NULL, updated_at = datetime('now')
             WHERE claimed_by = ? AND status = 6
         """, (user_id,))
         conn.execute("UPDATE users SET active = 0 WHERE id = ?", (user_id,))
@@ -188,14 +200,18 @@ def update_username(conn, user_id, new_username):
 #   5 pending supervisor    — Supervisor Pool (shared, all supervisors)
 #   6 in supervisor review  — individual supervisor's to-do (claimed)
 #   7 approved              — done (terminal)
-#   8 issues                — flagged as problematic (terminal-ish)
+#   8 issues                — flagged as problematic (terminal)
 
 def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
     """create a scene; owner_id and roi_filename are None for pool-imported scenes
     (owner set at claim time, roi_filename set when analyst saves the .sel file)"""
     def _write():
         conn.execute(
-            "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, status) VALUES (?, ?, ?, ?, 0)",
+            # updated_at is named explicitly rather than left to the column
+            # default: an existing DB keeps whatever default it was created
+            # with, which predates the switch to UTC.
+            "INSERT INTO scenes (name, scene_key, roi_filename, owner_id, status, updated_at)"
+            " VALUES (?, ?, ?, ?, 0, datetime('now'))",
             (name, scene_key, roi_filename, owner_id)
         )
         conn.commit()
@@ -209,9 +225,9 @@ def claim_from_pool(conn, scene_id, analyst_id):
     def _write():
         cur = conn.execute(
             """UPDATE scenes
-               SET status = 1, claimed_by = ?,
-                   owner_id = COALESCE(owner_id, ?)
-               WHERE id = ? AND status = 0""",
+                SET status = 1, claimed_by = ?,
+                    owner_id = COALESCE(owner_id, ?)
+                WHERE id = ? AND status = 0""",
             (analyst_id, analyst_id, scene_id)
         )
         conn.commit()
@@ -235,12 +251,12 @@ def release_scene(conn, scene_id):
     if scene['status'] == 1:
         # Returning to Scene Pool — clear ownership so the next claimer starts fresh
         sql = """UPDATE scenes
-                 SET status = 0, owner_id = NULL, claimed_by = NULL,
-                     updated_at = datetime('now', 'localtime')
-                 WHERE id = ?"""
+                SET status = 0, owner_id = NULL, claimed_by = NULL,
+                    updated_at = datetime('now')
+                WHERE id = ?"""
     elif scene['status'] == 3:
         # Returning to Peer Review Pool — only clear the reviewer's claim
-        sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
+        sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?"
     else:
         return
     def _write():
@@ -260,11 +276,11 @@ def get_analyst_queue(conn, user_id):
     return _read_all(
         conn,
         """SELECT scenes.*, users.username AS owner_username
-           FROM scenes
-           LEFT JOIN users ON scenes.owner_id = users.id
-           WHERE (scenes.status IN (1, 4) AND scenes.owner_id = ?)
-              OR (scenes.status = 3 AND scenes.claimed_by = ?)
-           ORDER BY CASE WHEN scenes.status = 4 THEN 0 ELSE 1 END,
+            FROM scenes
+            LEFT JOIN users ON scenes.owner_id = users.id
+            WHERE (scenes.status IN (1, 4) AND scenes.owner_id = ?)
+                OR (scenes.status = 3 AND scenes.claimed_by = ?)
+            ORDER BY CASE WHEN scenes.status = 4 THEN 0 ELSE 1 END,
                     scenes.updated_at DESC""",
         (user_id, user_id)
     )
@@ -282,7 +298,7 @@ def claim_for_supervisor_review(conn, scene_id, supervisor_id):
     """supervisor atomically claims a scene from the supervisor pool (5 -> 6)"""
     def _write():
         cur = conn.execute(
-            "UPDATE scenes SET status = 6, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 5",
+            "UPDATE scenes SET status = 6, claimed_by = ?, updated_at = datetime('now') WHERE id = ? AND status = 5",
             (supervisor_id, scene_id)
         )
         conn.commit()
@@ -293,7 +309,7 @@ def release_supervisor_review(conn, scene_id):
     """return a supervisor-claimed scene to the supervisor pool (6 -> 5)"""
     def _write():
         conn.execute(
-            "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ? AND status = 6",
+            "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now') WHERE id = ? AND status = 6",
             (scene_id,)
         )
         conn.commit()
@@ -303,7 +319,7 @@ def update_scene_flags(conn, scene_id, flags_str):
     """update the flags column on a scene"""
     def _write():
         conn.execute(
-            "UPDATE scenes SET flags = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET flags = ?, updated_at = datetime('now') WHERE id = ?",
             (flags_str, scene_id)
         )
         conn.commit()
@@ -349,7 +365,7 @@ def get_issues_queue(conn):
 
 _REVIEW_INSERT_SQL = (
     "INSERT INTO reviews (scene_id, reviewer_id, stage, decision, comments, timestamp) "
-    "VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))"
+    "VALUES (?, ?, ?, ?, ?, datetime('now'))"
 )
 
 
@@ -357,7 +373,7 @@ def record_submission(conn, scene_id, new_status, claimed_by, analyst_id, stage,
     """Transition a scene on analyst submission/resubmission and log it."""
     def _write():
         conn.execute(
-            "UPDATE scenes SET status = ?, claimed_by = ?, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET status = ?, claimed_by = ?, updated_at = datetime('now') WHERE id = ?",
             (new_status, claimed_by, scene_id)
         )
         conn.execute(_REVIEW_INSERT_SQL, (scene_id, analyst_id, stage, decision, comments))
@@ -370,7 +386,7 @@ def record_peer_review(conn, scene_id, reviewer_id, new_status, stage, decision,
     def _write():
         conn.execute("UPDATE scenes SET peer_reviewer_id = ? WHERE id = ?", (reviewer_id, scene_id))
         conn.execute(
-            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
             (new_status, scene_id)
         )
         conn.execute(_REVIEW_INSERT_SQL, (scene_id, reviewer_id, stage, decision, comments))
@@ -384,7 +400,7 @@ def record_supervisor_review(conn, scene_id, supervisor_id, new_status, stage, d
     def _write():
         conn.execute("UPDATE scenes SET supervisor_id = ? WHERE id = ?", (supervisor_id, scene_id))
         conn.execute(
-            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET status = ?, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?",
             (new_status, scene_id)
         )
         conn.execute(_REVIEW_INSERT_SQL, (scene_id, supervisor_id, stage, decision, comments))
@@ -399,14 +415,14 @@ def record_force_release(conn, scene_id, supervisor_id, stage, decision, comment
     claim before calling this."""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] == 6:
-        release_sql = "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
+        release_sql = "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?"
     elif scene['status'] == 1:
         release_sql = """UPDATE scenes
-                          SET status = 0, owner_id = NULL, claimed_by = NULL,
-                              updated_at = datetime('now', 'localtime')
-                          WHERE id = ?"""
+                        SET status = 0, owner_id = NULL, claimed_by = NULL,
+                            updated_at = datetime('now')
+                        WHERE id = ?"""
     elif scene['status'] == 3:
-        release_sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now', 'localtime') WHERE id = ?"
+        release_sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?"
     else:
         return
     def _write():
@@ -417,7 +433,7 @@ def record_force_release(conn, scene_id, supervisor_id, stage, decision, comment
 
 
 def record_scene_edit(conn, scene_id, new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by,
-                       acting_supervisor_id, stage, decision, comments):
+                        acting_supervisor_id, stage, decision, comments):
     """Reassign a scene's status/owner/peer-reviewer/supervisor/claim (supervisor
     admin edit) and log the change. Unlike the normal workflow transitions,
     this intentionally bypasses the set-once rule for the three assignment
@@ -426,7 +442,7 @@ def record_scene_edit(conn, scene_id, new_status, owner_id, peer_reviewer_id, su
         conn.execute("""
             UPDATE scenes
             SET status = ?, owner_id = ?, peer_reviewer_id = ?, supervisor_id = ?, claimed_by = ?,
-                updated_at = datetime('now', 'localtime')
+                updated_at = datetime('now')
             WHERE id = ?
         """, (new_status, owner_id, peer_reviewer_id, supervisor_id, claimed_by, scene_id))
         conn.execute(_REVIEW_INSERT_SQL, (scene_id, acting_supervisor_id, stage, decision, comments))
@@ -444,7 +460,7 @@ def record_scene_reset(conn, scene_id, acting_supervisor_id, stage, decision, co
                 peer_reviewer_id = NULL,
                 supervisor_id = NULL,
                 claimed_by = NULL,
-                updated_at = datetime('now', 'localtime')
+                updated_at = datetime('now')
             WHERE id = ?
         """, (scene_id,))
         conn.execute(_REVIEW_INSERT_SQL, (scene_id, acting_supervisor_id, stage, decision, comments))
@@ -488,11 +504,11 @@ def get_scene_history(conn, scene_id):
 def add_note(conn, scene_id, author_id, body):
     def _write():
         conn.execute(
-            "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
+            "INSERT INTO notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now'))",
             (scene_id, author_id, body)
         )
         conn.execute(
-            "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET updated_at = datetime('now') WHERE id = ?",
             (scene_id,)
         )
         conn.commit()
@@ -522,13 +538,13 @@ def get_scene_thread(conn, scene_id):
     reviews are an append-only audit log."""
     return _read_all(conn, """
         SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
-               n.author_id AS author_id, n.body AS content, NULL AS decision
+                n.author_id AS author_id, n.body AS content, NULL AS decision
         FROM notes n
         JOIN users u ON n.author_id = u.id
         WHERE n.scene_id = ?
         UNION ALL
         SELECT 'review' AS type, r.id AS id, r.timestamp, u.username AS author_name,
-               r.reviewer_id AS author_id, r.comments AS content, r.decision
+                r.reviewer_id AS author_id, r.comments AS content, r.decision
         FROM reviews r
         JOIN users u ON r.reviewer_id = u.id
         WHERE r.scene_id = ?
@@ -539,11 +555,11 @@ def get_scene_thread(conn, scene_id):
 def add_science_note(conn, scene_id, author_id, body):
     def _write():
         conn.execute(
-            "INSERT INTO science_notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now', 'localtime'))",
+            "INSERT INTO science_notes (scene_id, author_id, body, timestamp) VALUES (?, ?, ?, datetime('now'))",
             (scene_id, author_id, body)
         )
         conn.execute(
-            "UPDATE scenes SET updated_at = datetime('now', 'localtime') WHERE id = ?",
+            "UPDATE scenes SET updated_at = datetime('now') WHERE id = ?",
             (scene_id,)
         )
         conn.commit()
@@ -570,7 +586,7 @@ def get_science_notes(conn, scene_id):
     dialog."""
     return _read_all(conn, """
         SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
-               n.author_id AS author_id, n.body AS content
+                n.author_id AS author_id, n.body AS content
         FROM science_notes n
         JOIN users u ON n.author_id = u.id
         WHERE n.scene_id = ?
@@ -584,14 +600,14 @@ def get_analyst_in_progress(conn, user_id):
     they peer-reviewed at status 4/5 (decision made, scene still moving)."""
     return _read_all(conn, """
         SELECT s.*,
-               o.username AS owner_username,
-               cb.username AS current_holder,
-               CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
+                o.username AS owner_username,
+                cb.username AS current_holder,
+                CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
         FROM scenes s
         LEFT JOIN users o  ON s.owner_id   = o.id
         LEFT JOIN users cb ON s.claimed_by = cb.id
         WHERE (s.owner_id = ? AND s.status IN (2, 3, 5, 6))
-           OR (s.peer_reviewer_id = ? AND s.status IN (4, 5, 6))
+            OR (s.peer_reviewer_id = ? AND s.status IN (4, 5, 6))
         ORDER BY s.updated_at DESC
     """, (user_id, user_id, user_id))
 
@@ -600,12 +616,12 @@ def get_analyst_completed(conn, user_id):
     """Scenes the analyst was involved in that have reached APPROVED (status 7)."""
     return _read_all(conn, """
         SELECT s.*,
-               o.username AS owner_username,
-               CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
+                o.username AS owner_username,
+                CASE WHEN s.owner_id = ? THEN 'Owner' ELSE 'Peer Reviewer' END AS my_role
         FROM scenes s
         LEFT JOIN users o ON s.owner_id = o.id
         WHERE s.status = 7
-          AND (s.owner_id = ? OR s.peer_reviewer_id = ?)
+            AND (s.owner_id = ? OR s.peer_reviewer_id = ?)
         ORDER BY s.updated_at DESC
     """, (user_id, user_id, user_id))
 
@@ -629,6 +645,9 @@ _WEEK_START_SQL = "DATE('now','localtime','weekday 0','-6 days')"
 _LAST_WEEK_START_SQL = f"DATE({_WEEK_START_SQL},'-7 days')"
 _LAST_WEEK_END_SQL = f"DATE({_WEEK_START_SQL},'-1 days')"
 _TODAY_SQL = "DATE('now','localtime')"
+# Stored timestamps are UTC, so convert before bucketing: the day boundary has
+# to be the reader's midnight, not UTC's (which falls mid-afternoon locally).
+_LOCAL_DAY_SQL = "DATE(r.timestamp,'localtime')"
 
 
 def _period_counts(conn, from_where_sql, params, distinct_col=None):
@@ -640,20 +659,22 @@ def _period_counts(conn, from_where_sql, params, distinct_col=None):
     referencing the reviews table as 'r'."""
     if distinct_col:
         total_expr = f"COUNT(DISTINCT {distinct_col})"
-        week_expr = f"COUNT(DISTINCT CASE WHEN DATE(r.timestamp)>={_WEEK_START_SQL} THEN {distinct_col} END)"
-        last_expr = (f"COUNT(DISTINCT CASE WHEN DATE(r.timestamp)>={_LAST_WEEK_START_SQL} "
-                      f"AND DATE(r.timestamp)<={_LAST_WEEK_END_SQL} THEN {distinct_col} END)")
-        today_expr = f"COUNT(DISTINCT CASE WHEN DATE(r.timestamp)={_TODAY_SQL} THEN {distinct_col} END)"
+        week_expr = f"COUNT(DISTINCT CASE WHEN {_LOCAL_DAY_SQL}>={_WEEK_START_SQL} THEN {distinct_col} END)"
+        last_expr = (f"COUNT(DISTINCT CASE WHEN {_LOCAL_DAY_SQL}>={_LAST_WEEK_START_SQL} "
+                    f"AND {_LOCAL_DAY_SQL}<={_LAST_WEEK_END_SQL} THEN {distinct_col} END)")
+        today_expr = f"COUNT(DISTINCT CASE WHEN {_LOCAL_DAY_SQL}={_TODAY_SQL} THEN {distinct_col} END)"
     else:
         total_expr = "COUNT(*)"
-        week_expr = f"COUNT(CASE WHEN DATE(r.timestamp)>={_WEEK_START_SQL} THEN 1 END)"
-        last_expr = (f"COUNT(CASE WHEN DATE(r.timestamp)>={_LAST_WEEK_START_SQL} "
-                      f"AND DATE(r.timestamp)<={_LAST_WEEK_END_SQL} THEN 1 END)")
-        today_expr = f"COUNT(CASE WHEN DATE(r.timestamp)={_TODAY_SQL} THEN 1 END)"
+        week_expr = f"COUNT(CASE WHEN {_LOCAL_DAY_SQL}>={_WEEK_START_SQL} THEN 1 END)"
+        last_expr = (f"COUNT(CASE WHEN {_LOCAL_DAY_SQL}>={_LAST_WEEK_START_SQL} "
+                    f"AND {_LOCAL_DAY_SQL}<={_LAST_WEEK_END_SQL} THEN 1 END)")
+        today_expr = f"COUNT(CASE WHEN {_LOCAL_DAY_SQL}={_TODAY_SQL} THEN 1 END)"
+    # The fallback is unreachable -- an aggregate always returns one row -- but
+    # nothing in the types says so, and four columns do not fit _read_scalar.
     row = _read_one(
         conn,
         f"SELECT {total_expr}, {week_expr}, {last_expr}, {today_expr} FROM {from_where_sql}", params
-    )
+    ) or (0, 0, 0, 0)
     return {'total': row[0], 'week': row[1], 'last': row[2], 'today': row[3]}
 
 
@@ -698,7 +719,7 @@ def _multi_kickback_ratio(conn, user_id):
     what fraction needed 2+ rounds of SUPERVISOR revision along the way.
     Approximate: scenes with 2+ kicks that haven't reached APPROVED yet count
     toward neither the numerator nor the denominator."""
-    multi_kickback_scenes = _read_one(
+    multi_kickback_scenes = _read_scalar(
         conn,
         "SELECT COUNT(*) FROM ("
         "  SELECT r.scene_id FROM reviews r JOIN scenes s ON r.scene_id=s.id "
@@ -706,12 +727,12 @@ def _multi_kickback_ratio(conn, user_id):
         "  GROUP BY r.scene_id HAVING COUNT(*) >= 2"
         ")",
         (user_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION)
-    )[0]
-    completed_scenes = _read_one(
+    )
+    completed_scenes = _read_scalar(
         conn,
         "SELECT COUNT(*) FROM scenes WHERE owner_id=? AND status=?",
         (user_id, SceneStatus.APPROVED)
-    )[0]
+    )
     rate = round(multi_kickback_scenes / completed_scenes, 2) if completed_scenes else 0.0
     return {
         'multi_kickback_scenes_total': multi_kickback_scenes,
@@ -784,11 +805,11 @@ def get_supervisor_analyst_coverage(conn, supervisor_id):
         conn,
         """
         SELECT u.id, u.username,
-               SUM(CASE WHEN s.supervisor_id = ? AND s.status IN (?, ?)
+                SUM(CASE WHEN s.supervisor_id = ? AND s.status IN (?, ?)
                         THEN 1 ELSE 0 END) AS in_progress,
-               SUM(CASE WHEN s.supervisor_id = ? AND s.status = ?
+                SUM(CASE WHEN s.supervisor_id = ? AND s.status = ?
                         THEN 1 ELSE 0 END) AS approved_mine,
-               SUM(CASE WHEN s.status = ? THEN 1 ELSE 0 END) AS approved_any
+                SUM(CASE WHEN s.status = ? THEN 1 ELSE 0 END) AS approved_any
         FROM users u
         LEFT JOIN scenes s ON s.owner_id = u.id
         WHERE u.active = 1 AND u.role = ?
@@ -796,9 +817,9 @@ def get_supervisor_analyst_coverage(conn, supervisor_id):
         ORDER BY u.username
         """,
         (supervisor_id, SceneStatus.NEEDS_REVISION, SceneStatus.IN_SUPERVISOR_REVIEW,
-         supervisor_id, SceneStatus.APPROVED,
-         SceneStatus.APPROVED,
-         Role.ANALYST))
+        supervisor_id, SceneStatus.APPROVED,
+        SceneStatus.APPROVED,
+        Role.ANALYST))
 
 
 def get_all_supervisor_stats(conn):
@@ -814,7 +835,7 @@ def _run_migrations(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             id         TEXT PRIMARY KEY,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
     conn.commit()
@@ -862,7 +883,7 @@ def initialize_db():
             supervisor_id           INTEGER REFERENCES users (id),
             claimed_by              INTEGER REFERENCES users (id),
             submitted_at            TEXT,
-            updated_at              TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at              TEXT DEFAULT (datetime('now')),
             -- CSV metadata (representative first-row values for the filter group)
             fn                      TEXT,
             rover                   TEXT,
@@ -903,7 +924,7 @@ def initialize_db():
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id        INTEGER NOT NULL REFERENCES scenes (id),
             reviewer_id     INTEGER NOT NULL REFERENCES users (id),
-            timestamp       TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            timestamp       TEXT NOT NULL DEFAULT (datetime('now')),
             stage           TEXT NOT NULL,
             decision        TEXT NOT NULL,
             comments        TEXT
@@ -914,7 +935,7 @@ def initialize_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id    INTEGER NOT NULL REFERENCES scenes (id),
             author_id   INTEGER NOT NULL REFERENCES users (id),
-            timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
             body        TEXT NOT NULL
         )
     """)
@@ -923,7 +944,7 @@ def initialize_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             scene_id    INTEGER NOT NULL REFERENCES scenes (id),
             author_id   INTEGER NOT NULL REFERENCES users (id),
-            timestamp   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
             body        TEXT NOT NULL
         )
     """)

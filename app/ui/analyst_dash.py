@@ -5,7 +5,7 @@ from PyQt6.QtGui import QColor
 from app.ui.dashboard import (
     Dashboard, SCENE_BUTTONS, PersistentSplitter,
     make_scene_table, make_section,
-    parse_scene_key, apply_flag_delegate, make_flag_item,
+    parse_scene_key, apply_flag_delegate, make_flag_item, local_ts,
 )
 from app.local_settings import get_all_scene_viewed_times, get_dark_mode
 from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
@@ -109,11 +109,11 @@ class AnalystDashboard(Dashboard):
             (self.my_queue_table,     "My Work Queue",         self._my_queue_actions),
             (self.in_progress_table,  "In Progress",           SCENE_BUTTONS),
             (self.review_queue_table, "Ready for Peer Review",
-             [("Claim for Review", "handle_claim_for_review"), 'flag']),
+                [("Claim for Review", "handle_claim_for_review"), 'flag']),
             (self.scene_pool_table,   "Unclaimed Scenes",
-             [("Claim Scene", "handle_claim_from_pool"), 'flag']),
+                [("Claim Scene", "handle_claim_from_pool"), 'flag']),
             (self.completed_table,    "My Completed Scenes",
-             ['open_roi', 'open_notebook', 'open_folder', 'notes', 'science_notes']),
+                ['open_roi', 'open_notebook', 'open_folder', 'notes', 'science_notes']),
             (self.all_scenes_table,   "All Scenes",            SCENE_BUTTONS),
         ])
 
@@ -142,7 +142,7 @@ class AnalystDashboard(Dashboard):
             self.my_queue_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.my_queue_table.setItem(i, 7, make_flag_item(scene['flags']))
             self.my_queue_table.setItem(i, 8, QTableWidgetItem(scene['name']))
-            self.my_queue_table.setItem(i, 9, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.my_queue_table.setItem(i, 9, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(self.my_queue_table, get_analyst_queue(self.conn, analyst_id), fill_my_queue)
 
         scene_viewed = get_all_scene_viewed_times()
@@ -159,9 +159,9 @@ class AnalystDashboard(Dashboard):
             self.in_progress_table.setItem(i, 6, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.in_progress_table.setItem(i, 7, QTableWidgetItem(scene['current_holder'] or '—'))
             self.in_progress_table.setItem(i, 8, QTableWidgetItem(scene['name']))
-            self.in_progress_table.setItem(i, 9, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.in_progress_table.setItem(i, 9, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
             viewed_at = scene_viewed.get(str(scene['id']), '')
-            if (scene['updated_at'] or '') > viewed_at:
+            if (local_ts(scene['updated_at']) or '') > viewed_at:
                 for col in range(1, self.in_progress_table.columnCount()):
                     item = self.in_progress_table.item(i, col)
                     if item:
@@ -178,7 +178,7 @@ class AnalystDashboard(Dashboard):
             self.review_queue_table.setItem(i, 5, make_flag_item(scene['flags']))
             self.review_queue_table.setItem(i, 6, QTableWidgetItem(scene['name']))
             self.review_queue_table.setItem(i, 7, QTableWidgetItem(scene['owner_username'] or '—'))
-            self.review_queue_table.setItem(i, 8, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.review_queue_table.setItem(i, 8, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         ready_scenes = [s for s in get_ready_queue(self.conn) if s['owner_id'] != analyst_id]
         self._fill_table(self.review_queue_table, ready_scenes, fill_review)
 
@@ -191,7 +191,7 @@ class AnalystDashboard(Dashboard):
             self.scene_pool_table.setItem(i, 4, QTableWidgetItem(obs))
             self.scene_pool_table.setItem(i, 5, make_flag_item(scene['flags']))
             self.scene_pool_table.setItem(i, 6, QTableWidgetItem(scene['name']))
-            self.scene_pool_table.setItem(i, 7, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.scene_pool_table.setItem(i, 7, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(self.scene_pool_table, get_scene_pool(self.conn), fill_pool)
 
         def fill_completed(i, scene):
@@ -203,7 +203,7 @@ class AnalystDashboard(Dashboard):
             self.completed_table.setItem(i, 4, QTableWidgetItem(obs))
             self.completed_table.setItem(i, 5, QTableWidgetItem(scene['my_role']))
             self.completed_table.setItem(i, 6, QTableWidgetItem(scene['name']))
-            self.completed_table.setItem(i, 7, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.completed_table.setItem(i, 7, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(self.completed_table, get_analyst_completed(self.conn, analyst_id), fill_completed)
 
         def fill_all_scenes(i, scene):
@@ -217,7 +217,7 @@ class AnalystDashboard(Dashboard):
             self.all_scenes_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.all_scenes_table.setItem(i, 7, make_flag_item(scene['flags']))
             self.all_scenes_table.setItem(i, 8, QTableWidgetItem(scene['name']))
-            self.all_scenes_table.setItem(i, 9, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.all_scenes_table.setItem(i, 9, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(self.all_scenes_table, get_all_scenes(self.conn), fill_all_scenes)
 
         self.update_shared_tray()

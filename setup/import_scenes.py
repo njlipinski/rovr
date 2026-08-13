@@ -270,9 +270,12 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
             if not dry_run:
                 for s in new_scenes:
                     conn.execute(
+                        # updated_at is named explicitly rather than left to the
+                        # column default, which on an existing DB predates the
+                        # switch to storing UTC.
                         """INSERT INTO scenes
-                           (name, scene_key, status, rover, sol, seq_id, obs_ix)
-                           VALUES (?, ?, 0, ?, ?, ?, ?)""",
+                           (name, scene_key, status, rover, sol, seq_id, obs_ix, updated_at)
+                           VALUES (?, ?, 0, ?, ?, ?, ?, datetime('now'))""",
                         (s['name'], s['scene_key'], s['rover'], s['sol'], s['seq_id'], s['obs_ix']),
                     )
                 if new_scenes:
@@ -458,7 +461,8 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
                     product_creation_time, compression, first_line, first_sample,
                     samples, solar_elevation, instrument_elevation, instrument_azimuth,
                     solar_azimuth, incidence_angle, emission_angle, phase_angle,
-                    tau, rover_elevation, lon, lat
+                    tau, rover_elevation, lon, lat,
+                    updated_at
                 ) VALUES (
                     :scene_key, :name, 0,
                     :fn, :rover, :sclk, :product_type, :site, :pos, :seq_id, :filter,
@@ -466,7 +470,8 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
                     :product_creation_time, :compression, :first_line, :first_sample,
                     :samples, :solar_elevation, :instrument_elevation, :instrument_azimuth,
                     :solar_azimuth, :incidence_angle, :emission_angle, :phase_angle,
-                    :tau, :rover_elevation, :lon, :lat
+                    :tau, :rover_elevation, :lon, :lat,
+                    datetime('now')
                 )
             """, s)
         if new_scenes:

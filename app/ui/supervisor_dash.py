@@ -10,7 +10,7 @@ from app.ui.dashboard import (
     Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
     PersistentSplitter,
     make_scene_table, make_section,
-    parse_scene_key, apply_flag_delegate, make_flag_item,
+    parse_scene_key, apply_flag_delegate, make_flag_item, local_ts,
 )
 from app.db import (
     get_supervisor_queue, get_supervisor_my_queue, get_supervisor_in_progress,
@@ -244,7 +244,7 @@ class SupervisorDashboard(Dashboard):
             self.my_queue_table.setItem(i, 4, QTableWidgetItem(obs))
             self.my_queue_table.setItem(i, 5, QTableWidgetItem(scene['owner_username'] or '—'))
             self.my_queue_table.setItem(i, 6, make_flag_item(scene['flags']))
-            self.my_queue_table.setItem(i, 7, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.my_queue_table.setItem(i, 7, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(
             self.my_queue_table, get_supervisor_my_queue(self.conn, sup_id), fill_my_queue
         )
@@ -259,7 +259,7 @@ class SupervisorDashboard(Dashboard):
             self.pool_table.setItem(i, 5, QTableWidgetItem(obs))
             self.pool_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.pool_table.setItem(i, 7, make_flag_item(scene['flags']))
-            self.pool_table.setItem(i, 8, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.pool_table.setItem(i, 8, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(self.pool_table, get_supervisor_queue(self.conn), fill_pool)
 
         def fill_in_progress(i, scene):
@@ -272,7 +272,7 @@ class SupervisorDashboard(Dashboard):
             self.in_progress_table.setItem(i, 5, QTableWidgetItem(SceneStatus.LABELS[scene['status']]))
             self.in_progress_table.setItem(i, 6, QTableWidgetItem(scene['owner_username'] or '—'))
             self.in_progress_table.setItem(i, 7, make_flag_item(scene['flags']))
-            self.in_progress_table.setItem(i, 8, QTableWidgetItem(str(scene['updated_at'] or '—')))
+            self.in_progress_table.setItem(i, 8, QTableWidgetItem(str(local_ts(scene['updated_at']) or '—')))
         self._fill_table(
             self.in_progress_table,
             get_supervisor_in_progress(self.conn, sup_id),

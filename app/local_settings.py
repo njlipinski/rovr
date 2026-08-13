@@ -32,6 +32,18 @@ def set_roi_studio_path(path):
     _save(data)
 
 
+def get_roi_studio_python():
+    """Interpreter used to run ROI Studio when the stored path is a source
+    checkout's .py entry point rather than a packaged build. Empty otherwise."""
+    return _load().get('roi_studio_python', '')
+
+
+def set_roi_studio_python(path):
+    data = _load()
+    data['roi_studio_python'] = path
+    _save(data)
+
+
 def get_column_widths(key):
     return _load().get('column_widths', {}).get(key)
 
