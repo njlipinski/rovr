@@ -28,12 +28,14 @@ from app.local_settings import (
     get_roi_studio_python, set_roi_studio_python,
     get_column_widths, set_column_widths,
     get_dark_mode, set_dark_mode,
+    get_confetti, set_confetti,
     get_ui_scale, set_ui_scale,
     get_dialog_size, set_dialog_size,
     get_splitter_sizes, set_splitter_sizes,
     set_scene_viewed_at,
 )
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme, color_button
+from app.ui.confetti import ConfettiOverlay
 
 # Preset options shown in the ☰ -> UI Scale menu. Applied via QT_SCALE_FACTOR
 # at next launch (Qt reads it once, at startup)
@@ -43,7 +45,7 @@ from app.db import (
     get_science_notes, add_science_note, update_science_note, delete_science_note,
     update_username, update_user_password, get_user_by_username,
     update_scene_flags, get_user_stats, get_all_user_stats, get_all_supervisor_stats,
-    get_supervisor_analyst_coverage,
+    get_supervisor_analyst_coverage, get_owned_activity_since,
 )
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
@@ -1031,7 +1033,7 @@ class StatsDialog(SizePersistentDialog):
         ("Scenes submitted",       'submitted_total',    'submitted_today'),
         ("Peer reviews completed", 'peer_reviewed_total','peer_reviewed_today'),
         ("My scenes approved",     'approved_total',     'approved_today'),
-        ("Kicked back to me",      'kicked_back_total',  'kicked_back_today'),
+        ("Scenes reworked",        'multi_kickback_scenes_total', 'multi_kickback_scenes_today'),
         ("Rework rate (2+ supervisor kicks / completed)", 'multi_kickback_rate_total', None),
     ]
 
@@ -1088,7 +1090,7 @@ class StatsDialog(SizePersistentDialog):
         ("Submitted",           'submitted'),
         ("Peer Rev'd",          'peer_reviewed'),
         ("Approved",            'approved'),
-        ("Kicked Back",         'kicked_back'),
+        ("2+ Super. Kicks",     'multi_kickback_scenes'),
     ]
 
     # Total-only metrics: no meaningful week/today cut (the two counts span
@@ -1096,7 +1098,6 @@ class StatsDialog(SizePersistentDialog):
     # "Analyst Total" tab, not the Daily/Weekly tabs.
     _ANALYST_TOTAL_ONLY_METRICS = [
         ("Completed",           'completed_scenes'),
-        ("2+ Super. Kicks",     'multi_kickback_scenes'),
         ("Rework Rate",         'multi_kickback_rate'),
     ]
 
@@ -1229,7 +1230,8 @@ class StatsChartDialog(SizePersistentDialog):
         ("Submitted",    'submitted_total',    'submitted_last',    'submitted_week',    'submitted_today'),
         ("Peer Rev'd",   'peer_reviewed_total','peer_reviewed_last','peer_reviewed_week','peer_reviewed_today'),
         ("Approved",     'approved_total',     'approved_last',     'approved_week',     'approved_today'),
-        ("Kicked Back",  'kicked_back_total',  'kicked_back_last',  'kicked_back_week',  'kicked_back_today'),
+        ("2+ Super. Kicks", 'multi_kickback_scenes_total', 'multi_kickback_scenes_last',
+         'multi_kickback_scenes_week', 'multi_kickback_scenes_today'),
     ]
 
     _MODES = [
@@ -1296,6 +1298,12 @@ class StatsChartDialog(SizePersistentDialog):
         ax = self._ax
         ax.clear()
 
+        # Resolved before anything is drawn: the bar value labels take their
+        # color at creation time, unlike the axis text recolored further down.
+        dark = get_dark_mode()
+        bg = '#2b2b2b' if dark else '#ffffff'
+        fg = '#dddddd' if dark else '#000000'
+
         metrics = self._metrics_keyed()
         usernames = [u['username'] for u, _ in self._all_stats]
         n_users = len(usernames)
@@ -1307,7 +1315,7 @@ class StatsChartDialog(SizePersistentDialog):
             vals = [s[key] for _, s in self._all_stats]
             offset = (m_idx - n_metrics / 2 + 0.5) * width
             bars = ax.bar(x + offset, vals, width, label=label)
-            ax.bar_label(bars, padding=2, fontsize=8)
+            ax.bar_label(bars, padding=2, fontsize=8, color=fg)
 
         ax.set_xticks(x)
         ax.set_xticklabels(usernames, rotation=20, ha='right')
@@ -1316,9 +1324,6 @@ class StatsChartDialog(SizePersistentDialog):
         ax.legend(loc='upper right')
         ax.margins(y=0.15)
 
-        dark = get_dark_mode()
-        bg = '#2b2b2b' if dark else '#ffffff'
-        fg = '#dddddd' if dark else '#000000'
         self._fig.patch.set_facecolor(bg)
         ax.set_facecolor('#3c3f41' if dark else '#f8f8f8')
         ax.tick_params(colors=fg)
@@ -1338,10 +1343,19 @@ class StatsChartDialog(SizePersistentDialog):
 
 
 class Dashboard(QMainWindow):
-    def __init__(self, conn, user):
+    # Built by each subclass's _build_main_content(). Declared here because
+    # refresh_task_list() watches it for the queue-cleared celebration.
+    my_queue_table: QTableWidget
+
+    def __init__(self, conn, user, away_since=None):
         super().__init__()
         self.conn = conn
         self.user = user
+        # UTC stamp this user was last here on this machine, or None to skip the
+        # While You Were Away summary entirely (first run, or already shown this
+        # session). Set by LoginUI, which owns the stamp.
+        self._away_since = away_since
+        self._away_summary_done = False
         self._filters = dict(FilterDialog._DEFAULTS)
         self._filters['rovers'] = set(FilterDialog._DEFAULTS['rovers'])
         self.setWindowTitle(f"ROVR {__version__} — {user['username']}")
@@ -1395,16 +1409,49 @@ class Dashboard(QMainWindow):
         self.main_content_layout.setSpacing(4)
         bottom_layout.addWidget(self.main_content, stretch=1)
 
+    # ── While You Were Away ─────────────────────────────────────────────
+
+    def showEvent(self, event):
+        """Fire the away summary once, on the first show."""
+        super().showEvent(event)
+        if not self._away_summary_done:
+            self._away_summary_done = True
+            QTimer.singleShot(0, self._show_away_summary)
+
+    def _away_summary_items(self):
+        """Lines for the While You Were Away dialog, as
+        [(count, singular_text, plural_text, celebrate)]. `celebrate` marks a
+        line as good news: any of those with a nonzero count earns confetti."""
+        return []
+
+    def _show_away_summary(self):
+        """Report what happened to this user's scenes since they were last here.
+        Silent when there is no window to report on (first run on this machine)
+        or when nothing in it moved."""
+        if not self._away_since:
+            return
+        items = [item for item in self._away_summary_items() if item[0]]
+        if not items:
+            return
+        lines = "\n".join(f"    {n} {one if n == 1 else many}"
+                        for n, one, many, _ in items)
+        # Started before the dialog, which blocks: the confetti is already
+        # falling behind it by the time the user reads the good news.
+        if get_confetti() and any(celebrate for _, _, _, celebrate in items):
+            ConfettiOverlay(self)
+        QMessageBox.information(
+            self, "While You Were Away",
+            f"Since your last visit ({local_ts(self._away_since)}):\n\n{lines}"
+        )
+
     # ── Shared helpers available to all subclasses ──────────────────────
 
     def _run_db_action(self, fn, error_title="Action Failed"):
         """Run fn() (typically a lambda calling a controller function that
         writes to the DB), showing a message box instead of crashing for
         either a business-rule violation (ValueError, raised by controller.py)
-        or database lock contention that outlasted every retry
-        (sqlite3.OperationalError -- DB_PATH lives on a shared network drive,
-        so writes already retry for up to ~30s inside db.py before this can
-        even be reached). Returns True on success, False if fn() raised."""
+        or database lock contention that outlasted every retry.
+        Returns True on success, False if fn() raised."""
         try:
             fn()
             return True
@@ -1438,22 +1485,15 @@ class Dashboard(QMainWindow):
             raise
 
     def run_bulk_action(self, table, action, title, *,
-                        done_msg, none_msg, partial_msg, confirm_msg=None):
+                        done_msg, none_msg, partial_msg, confirm_msg=None,
+                        celebrate_empty=True):
         """Apply 'action(scene_id)' to every selected row in 'table'.
 
-        Each scene is written independently, so one that is no longer eligible
-        — someone else claimed it, or its status moved on since the rows were
-        drawn — raises ValueError from 'controller.py' and is counted as
-        skipped instead of aborting the batch. An 'action' that returns False
-        counts as skipped too, for controller functions that report failure
-        that way rather than raising. Lock contention is different: it means
-        nothing further can be written, so `_run_db_action` stops the run and
-        shows its own dialog.
-
-        'done_msg'/'none_msg'/'partial_msg' are format strings taking {done}
-        and {skipped}. 'confirm_msg' (taking {n}) is shown as a Yes/Cancel
-        prompt first, but only when more than one row is selected — bulk
-        actions that can't be undone ask; single-scene ones stay one click.
+        Each scene is written independently, so one that is no longer eligible 
+        raises ValueError from 'controller.py' and is counted as
+        skipped instead of aborting the batch. Lock contention is different: 
+        it means nothing further can be written, so `_run_db_action` stops the 
+        run and shows its own dialog.
 
         Returns the number of scenes acted on.
         """
@@ -1482,7 +1522,7 @@ class Dashboard(QMainWindow):
                     skipped += 1
 
         ok = self._run_db_action(_run_all, f"{title} Failed")
-        self.refresh_task_list()
+        self.refresh_task_list(celebrate_empty=celebrate_empty)
         if not ok:
             return done
         if skipped == 0:
@@ -1547,7 +1587,7 @@ class Dashboard(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._filters = dlg.result_filters()
             self._update_filter_btn()
-            self.refresh_task_list()
+            self.refresh_task_list(celebrate_empty=False)
 
     def _update_filter_btn(self):
         f = self._filters
@@ -1753,9 +1793,7 @@ class Dashboard(QMainWindow):
 
         Each entry in `actions` is either a SCENE_ACTIONS key (bound to
         `table`) or an explicit (label, method name) pair for a handler that
-        is specific to this dashboard, like Submit or Claim. Passing
-        enabled=False just clears the tray — callers decide what counts as a
-        usable selection, since the bulk-claim trays accept multiple rows."""
+        is specific to this dashboard, like Submit or Claim."""
         clear_tray(tray)
         if not enabled:
             return
@@ -1779,20 +1817,12 @@ class Dashboard(QMainWindow):
 
     # ── The shared tray ─────────────────────────────────────────────────
     # Both dashboards show several scene tables at once. Rather than give each
-    # one its own tray (which duplicated "Open in ROI Studio" six times on the
-    # analyst dashboard alone), all buttons live in a single tray that acts on
+    # one its own tray, all buttons live in a single tray that acts on
     # whichever table currently holds the selection. Selecting in one table
-    # clears the others, so "the selected scene" is never ambiguous. The tray
-    # sits between the two rows of tables rather than under them. See ADR-021.
+    # clears the others, so "the selected scene" is never ambiguous.
 
     def make_tray_bar(self, sections):
-        """Build the shared tray and wire up single-table selection.
-
-        `sections` is a sequence of (table, title, actions), where `actions` is
-        either a list of build_tray() entries or a zero-argument callable
-        returning one — the latter for tables whose buttons depend on the
-        selected row's status. Returns the widget both dashboards drop into
-        their vertical splitter, between the two rows of tables."""
+        """Build the shared tray and wire up single-table selection."""
         self._sections = list(sections)
         self._active_table = None
         self._syncing = False
@@ -1807,14 +1837,11 @@ class Dashboard(QMainWindow):
                 lambda t=table: self._on_table_selection_changed(t)
             )
 
-        # Refresh lives on the tray row rather than under the tables: with the
-        # tray in the middle of the window there is no longer a button strip at
-        # the bottom for it to sit in. It is the one tray button that acts on
-        # the dashboard rather than on the selected scene, so it is kept out of
-        # shared_tray (which build_tray() clears and rebuilds on every
-        # selection) and right-aligned, away from the scene actions.
         self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.clicked.connect(self.refresh_task_list)
+        # Explicit lambda, not a direct connect: clicked() emits a bool that
+        # would otherwise land in celebrate_empty.
+        self.refresh_button.clicked.connect(
+            lambda: self.refresh_task_list(celebrate_empty=False))
 
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -1834,10 +1861,6 @@ class Dashboard(QMainWindow):
         layout.setSpacing(2)
         layout.addWidget(self.tray_label)
         layout.addWidget(row)
-        # A size policy alone is not enough once the bar sits inside a
-        # QSplitter: a splitter sizes its panes by min/max, not by policy, and
-        # would happily stretch or squash the tray. Pinning the height is what
-        # makes the tray a fixed band between the two rows of tables.
         bar.setFixedHeight(max(bar.sizeHint().height(), bar.minimumSizeHint().height()))
         self.update_shared_tray()
         self.tray_bar = bar
@@ -1846,13 +1869,7 @@ class Dashboard(QMainWindow):
     def make_rows_splitter(self, key, top, tray_bar, bottom, weights=(1, 1)):
         """Stack a row of tables, the shared tray, and a second row of tables in
         one vertical splitter, saved under `key`. `weights` is the (top, bottom)
-        stretch used until the user drags a handle.
-
-        The tray sits between the rows rather than under them, so it stays near
-        the tables on both sides instead of drifting a full window-height away
-        from whichever one the user is working in. It is pinned to its own
-        height and cannot be collapsed, so both handles resize only the tables
-        around it. Returns the widget to add to main_content_layout."""
+        stretch used until the user drags a handle."""
         rows = PersistentSplitter(Qt.Orientation.Vertical, key)
         rows.addWidget(top)
         rows.addWidget(tray_bar)
@@ -1979,14 +1996,7 @@ class Dashboard(QMainWindow):
 
     def generate_summary_slide(self, scene_id, force=False):
         """Build a scene's summary slide, skipping the work if the one on disk
-        is already newer than everything it was built from.
-
-        Returns a description of the problem, or None on success. Slides are a
-        convenience layered on top of the workflow, never a precondition for
-        it: this is called after the DB write that moved the scene, so a
-        missing .fits or an unreachable drive is reported, never rolled back
-        and never allowed to block a review. The caller decides how to show it
-        — one dialog for a single scene, one combined dialog for a batch."""
+        is already newer than everything it was built from."""
         try:
             scene = get_scene_by_id(self.conn, scene_id)
         except sqlite3.OperationalError:
@@ -2005,12 +2015,7 @@ class Dashboard(QMainWindow):
 
     def handle_open_summary_slide(self, scene_id):
         """Open a scene's summary slide in the system PDF viewer, rebuilding it
-        first if it is missing or older than the images it summarises.
-
-        Handing the file to the OS rather than rendering it in a Qt window is
-        deliberate: the viewer is already installed, already fast, and gives
-        zoom and page navigation for free — which the ROI metadata table needs
-        and a QLabel would not provide."""
+        first if it is missing or older than the images it summarizes."""
         problem = self.generate_summary_slide(scene_id)
         if problem:
             QMessageBox.warning(self, "Summary Slide Unavailable", problem)
@@ -2112,6 +2117,12 @@ class Dashboard(QMainWindow):
         act_dark.toggled.connect(self._toggle_dark_mode)
         menu.addAction(act_dark)
 
+        act_confetti = QAction("Confetti", self)
+        act_confetti.setCheckable(True)
+        act_confetti.setChecked(get_confetti())
+        act_confetti.toggled.connect(set_confetti)
+        menu.addAction(act_confetti)
+
         scale_menu = menu.addMenu("UI Scale (restart required)")
         assert scale_menu is not None
         current_scale = get_ui_scale()
@@ -2155,15 +2166,20 @@ class Dashboard(QMainWindow):
     def _handle_change_password(self):
         ChangePasswordDialog(self.conn, self.user, self).exec()
 
-    def refresh_task_list(self):
+    def refresh_task_list(self, celebrate_empty=True):
         """Repopulate every table on this dashboard.
 
         Guarded rather than left to each subclass: this runs automatically
         after every action, so a locked database here would take the window
         down for something the user never asked for. Subclasses implement
-        _refresh_tables() and get the handling for free.
-        """
+        _refresh_tables() and get the handling for free. Clearing My Work 
+        Queue earns confetti"""
+        
+        before = self.my_queue_table.rowCount()
         self._run_db_read(self._refresh_tables)
+        if (celebrate_empty and before and not self.my_queue_table.rowCount()
+                and get_confetti()):
+            ConfettiOverlay(self)
 
     def _refresh_tables(self):
         raise NotImplementedError

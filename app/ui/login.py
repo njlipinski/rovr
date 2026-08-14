@@ -9,7 +9,14 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.auth import authenticate_user
+from app.local_settings import get_last_login, set_last_login
 from app.models import Role
+
+
+# Usernames whose away window has already been consumed since this process
+# started. Module level, not instance state: handle_logout() throws the old
+# LoginUI away and builds a fresh one, so anything held on self would reset.
+_away_consumed = set()
 
 
 class LoginUI(QWidget):
@@ -82,10 +89,22 @@ class LoginUI(QWidget):
         from app.ui.analyst_dash import AnalystDashboard
         from app.ui.supervisor_dash import SupervisorDashboard
 
+        away_since = self._consume_away_window(user['username'])
         if user['role'] == Role.ANALYST:
-            self.dashboard = AnalystDashboard(self.conn, user)
+            self.dashboard = AnalystDashboard(self.conn, user, away_since=away_since)
         else:
-            self.dashboard = SupervisorDashboard(self.conn, user)
+            self.dashboard = SupervisorDashboard(self.conn, user, away_since=away_since)
 
         self.dashboard.show()
         self.close()
+
+    @staticmethod
+    def _consume_away_window(username):
+        """Return the UTC stamp the While You Were Away summary should measure
+        from, and move the stamp forward to now. None means show nothing."""
+        if username in _away_consumed:
+            return None
+        _away_consumed.add(username)
+        previous = get_last_login(username)
+        set_last_login(username)
+        return previous or None

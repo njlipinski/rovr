@@ -17,12 +17,16 @@ MIN_COL_WIDTH = 30   # minimum column width during interactive resize
 NEW_ACTIVITY_LIGHT = '#dbeafe'   # light blue, readable on white
 NEW_ACTIVITY_DARK  = '#1a3a5c'   # dark blue, readable on dark background
 
+# ── Confetti ─────────────────────────────────────────────────────────────────
+
+CONFETTI_COLORS = ['#e63946', '#f4a261', '#e9c46a', '#2a9d8f',
+                    '#4895ef', '#7209b7', '#f72585']
+
 # ── Colored action buttons ───────────────────────────────────────────────────
 # What the color means, not which button wears it: green moves a scene forward,
 # blue opens the review dialog, red sends it back or ends it. Applied per widget
 # rather than through a theme rule, because the light theme deliberately runs
-# with no stylesheet at all and these must look the same either way. Shades are
-# dark enough for white text to clear WCAG AA on both backgrounds.
+# with no stylesheet at all and these must look the same either way.
 
 BUTTON_GREEN = ('#2e7d32', '#1f5c24')   # (base, hover/pressed)
 BUTTON_BLUE  = ('#1565c0', '#0d4a94')

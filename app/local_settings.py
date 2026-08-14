@@ -75,6 +75,19 @@ def set_dark_mode(enabled):
     _save(data)
 
 
+def get_confetti():
+    """Whether to celebrate approvals in the While You Were Away summary.
+    On unless the user turned it off, so nobody has to find the switch to get
+    the intended experience."""
+    return bool(_load().get('confetti', True))
+
+
+def set_confetti(enabled):
+    data = _load()
+    data['confetti'] = bool(enabled)
+    _save(data)
+
+
 def get_ui_scale():
     return float(_load().get('ui_scale', 1.0))
 
@@ -92,6 +105,21 @@ def get_dialog_size(key):
 def set_dialog_size(key, width, height):
     data = _load()
     data.setdefault('dialog_sizes', {})[key] = [width, height]
+    _save(data)
+
+
+def get_last_login(username):
+    """UTC 'YYYY-MM-DD HH:MM:SS' of this user's previous login on this machine,
+    or '' if they have never logged in here."""
+    return _load().get('last_login', {}).get(username, '')
+
+
+def set_last_login(username):
+    """Stamp this user's login time on this machine."""
+    from datetime import datetime, timezone
+    data = _load()
+    data.setdefault('last_login', {})[username] = (
+        datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
     _save(data)
 
 

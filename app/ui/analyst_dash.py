@@ -12,6 +12,7 @@ from app.ui.styles import NEW_ACTIVITY_LIGHT, NEW_ACTIVITY_DARK
 from app.db import (
     get_analyst_queue, get_ready_queue, get_scene_pool, get_analyst_in_progress,
     get_analyst_completed, get_all_scenes, get_scene_by_id,
+    get_owned_activity_since,
 )
 from app.controller import (
     claim_from_pool, claim_scene_for_review, submit_scene,
@@ -46,9 +47,20 @@ _MY_QUEUE_BUTTONS = {
 
 class AnalystDashboard(Dashboard):
 
-    def __init__(self, conn, user):
-        super().__init__(conn, user)
+    def __init__(self, conn, user, away_since=None):
+        super().__init__(conn, user, away_since=away_since)
         self._build_main_content()
+
+    def _away_summary_items(self):
+        activity = self._run_db_read(
+            lambda: get_owned_activity_since(self.conn, self.user['id'], self._away_since),
+            default={'approved': 0, 'kicked_back': 0})
+        return [
+            (activity['approved'], "of your scenes was approved",
+                                    "of your scenes were approved", True),
+            (activity['kicked_back'], "of your scenes was kicked back to you",
+                                    "of your scenes were kicked back to you", False),
+        ]
 
     # ── Build UI ────────────────────────────────────────────────────────
 
@@ -336,6 +348,7 @@ class AnalystDashboard(Dashboard):
             done_msg="{done} scene(s) released back to the pool.",
             none_msg="None of the selected scenes could be released.",
             partial_msg="{done} scene(s) released; {skipped} were no longer eligible.",
+            celebrate_empty=False,
         )
 
     # ── Pool / review queue handlers ────────────────────────────────────

@@ -25,18 +25,6 @@ def _retry_on_lock(fn, retries, delay, on_error=None):
     near-simultaneous write is expected to occasionally collide -- it should
     resolve within a second or two once their transaction commits.
 
-    Each attempt's own busy timeout (see get_db_connection) already does the
-    real waiting -- it retries internally at a fine grain and returns the
-    instant the lock clears, rather than blocking for the full timeout
-    regardless. So by the time this except block runs, that 1s window has
-    already been spent failing; there is nothing to gain from sleeping long
-    here too. `delay` just avoids hammering the network share back-to-back
-    while genuinely waiting out a longer hold.
-
-    Re-raises whatever it last saw once retries are exhausted, or immediately
-    for any other kind of error (those aren't going to be fixed by waiting).
-    `on_error` runs after every failed attempt, including the last.
-
     Callers use the two wrappers below rather than calling this directly.
     """
     for attempt in range(retries):
@@ -54,20 +42,16 @@ def _with_lock_retry(conn, fn, retries=_WRITE_RETRIES, delay=_RETRY_DELAY):
     """Run fn() (a DB write) with retries, rolling back between attempts.
 
     Every write in this module goes through here so that a lock never
-    surfaces as a crash. Fast in the common case -- a real collision clears
-    in well under a second, often on the very first attempt -- but a drive
-    that genuinely drops freezes the UI for the whole budget, since this
-    runs on Qt's main thread.
+    surfaces as a crash.
 
     The rollback is load-bearing. Python's sqlite3 opens a transaction
     implicitly before the first write and holds it until commit or rollback,
-    and commit is the statement that usually fails here -- SQLite skips its
+    and commit is the statement that usually fails here. SQLite skips its
     busy handler when a connection has to upgrade a lock it already holds, so
     a blocked commit returns immediately rather than waiting out the timeout.
     fn()'s statements are therefore still pending when this runs. Without the
     rollback the next attempt appends a second copy of them to that same open
-    transaction, and whichever attempt finally commits writes every copy --
-    one peer review logging N rows to the append-only reviews table. Rolling
+    transaction, and whichever attempt finally commits writes every copy. Rolling
     back on the final failure matters too: it releases the write lock, which
     would otherwise be held for the rest of the session once the UI catches
     the error and carries on.
@@ -76,16 +60,7 @@ def _with_lock_retry(conn, fn, retries=_WRITE_RETRIES, delay=_RETRY_DELAY):
 
 
 def _with_read_retry(fn, retries=_READ_RETRIES, delay=_RETRY_DELAY):
-    """Run fn() (a DB read) with retries. Use _read_one/_read_all instead.
-
-    Reads get a shorter budget than writes because this also runs on Qt's
-    main thread and refresh_task_list() fires automatically after every
-    action, not just when the user asked for something -- a read on the write
-    budget would freeze the window for that whole time unprompted. A read is
-    safe to abandon and retry later; a write is not. No rollback: reads
-    don't open a transaction, and clearing one here could discard a caller's
-    in-flight write.
-    """
+    """Run fn() (a DB read) with retries. Use _read_one/_read_all instead."""
     return _retry_on_lock(fn, retries, delay)
 
 
@@ -534,8 +509,8 @@ def delete_note(conn, note_id):
 def get_scene_thread(conn, scene_id):
     """Interleaved notes + review-comments for a scene, oldest first.
     Each row: type ('note'/'review'), id, timestamp, author_name, author_id,
-    content, decision. Only type='note' rows are ever editable/deletable —
-    reviews are an append-only audit log."""
+    content, decision. Only type='note' rows are ever editable/deletable.
+    Reviews are an append-only audit log."""
     return _read_all(conn, """
         SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
                 n.author_id AS author_id, n.body AS content, NULL AS decision
@@ -581,9 +556,7 @@ def delete_science_note(conn, note_id):
 
 
 def get_science_notes(conn, scene_id):
-    """Manually authored science notes for a scene, oldest first. No housekeeping
-    (review/decision) entries — only rows added directly through the Science Notes
-    dialog."""
+    """Manually authored science notes for a scene, oldest first."""
     return _read_all(conn, """
         SELECT 'note' AS type, n.id AS id, n.timestamp, u.username AS author_name,
                 n.author_id AS author_id, n.body AS content
@@ -705,7 +678,7 @@ def _approved_counts(conn, user_id, owner_column):
 
 def _kickback_counts(conn, user_id, owner_column):
     """Distinct scenes where scenes.<owner_column> = user_id that were kicked
-    back (any stage, peer or supervisor) at least once in each period -- a
+    back (any stage, peer or supervisor) at least once in each period. A
     scene kicked back more than once in the period still counts once."""
     return _period_counts(
         conn,
@@ -714,20 +687,30 @@ def _kickback_counts(conn, user_id, owner_column):
         (user_id, Decision.NEEDS_REVISION), distinct_col='r.scene_id')
 
 
-def _multi_kickback_ratio(conn, user_id):
+def _multi_kickback_counts(conn, user_id):
+    """Distinct scenes owned by user_id that needed 2+ rounds of SUPERVISOR
+    revision. ROW_NUMBER stamps each supervisor kick-back with its position in
+    that scene's kick order, and only the 2nd and later ones are counted, so a
+    scene lands in the period where it crossed the two-kick line. The all-time
+    total is therefore every scene that ever reached two kicks."""
+    return _period_counts(
+        conn,
+        "("
+        "  SELECT r.scene_id, r.timestamp,"
+        "         ROW_NUMBER() OVER (PARTITION BY r.scene_id"
+        "                            ORDER BY r.timestamp, r.id) AS kick_num"
+        "  FROM reviews r JOIN scenes s ON r.scene_id=s.id"
+        "  WHERE s.owner_id=? AND r.stage=? AND r.decision=?"
+        ") r WHERE r.kick_num >= 2",
+        (user_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION),
+        distinct_col='r.scene_id')
+
+
+def _multi_kickback_ratio(conn, user_id, multi_kickback_scenes):
     """All-time only -- of the scenes user_id has completed (status=APPROVED),
     what fraction needed 2+ rounds of SUPERVISOR revision along the way.
     Approximate: scenes with 2+ kicks that haven't reached APPROVED yet count
     toward neither the numerator nor the denominator."""
-    multi_kickback_scenes = _read_scalar(
-        conn,
-        "SELECT COUNT(*) FROM ("
-        "  SELECT r.scene_id FROM reviews r JOIN scenes s ON r.scene_id=s.id "
-        "  WHERE s.owner_id=? AND r.stage=? AND r.decision=? "
-        "  GROUP BY r.scene_id HAVING COUNT(*) >= 2"
-        ")",
-        (user_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION)
-    )
     completed_scenes = _read_scalar(
         conn,
         "SELECT COUNT(*) FROM scenes WHERE owner_id=? AND status=?",
@@ -735,7 +718,6 @@ def _multi_kickback_ratio(conn, user_id):
     )
     rate = round(multi_kickback_scenes / completed_scenes, 2) if completed_scenes else 0.0
     return {
-        'multi_kickback_scenes_total': multi_kickback_scenes,
         'completed_scenes_total': completed_scenes,
         'multi_kickback_rate_total': rate,
     }
@@ -746,7 +728,7 @@ def get_user_stats(conn, user_id):
     submitted = _submitted_counts(conn, user_id)
     peer_reviewed = _peer_reviewed_counts(conn, user_id)
     approved = _approved_counts(conn, user_id, 'owner_id')
-    kickbacks = _kickback_counts(conn, user_id, 'owner_id')
+    multi_kickbacks = _multi_kickback_counts(conn, user_id)
 
     stats = {
         'submitted_total': submitted['total'],
@@ -761,12 +743,12 @@ def get_user_stats(conn, user_id):
         'approved_week': approved['week'],
         'approved_last': approved['last'],
         'approved_today': approved['today'],
-        'kicked_back_total': kickbacks['total'],
-        'kicked_back_week': kickbacks['week'],
-        'kicked_back_last': kickbacks['last'],
-        'kicked_back_today': kickbacks['today'],
+        'multi_kickback_scenes_total': multi_kickbacks['total'],
+        'multi_kickback_scenes_week': multi_kickbacks['week'],
+        'multi_kickback_scenes_last': multi_kickbacks['last'],
+        'multi_kickback_scenes_today': multi_kickbacks['today'],
     }
-    stats.update(_multi_kickback_ratio(conn, user_id))
+    stats.update(_multi_kickback_ratio(conn, user_id, multi_kickbacks['total']))
     return stats
 
 
@@ -830,6 +812,25 @@ def get_all_supervisor_stats(conn):
     return [(u, get_supervisor_stats(conn, u['id'])) for u in users]
 
 
+def get_owned_activity_since(conn, user_id, since):
+    """Scenes owned by user_id that a reviewer acted on after `since`, for the
+    While You Were Away summary. Returns {'approved': n, 'kicked_back': n}."""
+    row = _read_one(
+        conn,
+        """
+        SELECT COUNT(DISTINCT CASE WHEN r.stage = ? AND r.decision = ?
+                                    THEN r.scene_id END),
+                COUNT(DISTINCT CASE WHEN r.decision = ? THEN r.scene_id END)
+        FROM reviews r
+        JOIN scenes s ON r.scene_id = s.id
+        WHERE s.owner_id = ? AND r.timestamp > ?
+        """,
+        (Stage.SUPERVISOR_REVIEW, Decision.APPROVED, Decision.NEEDS_REVISION,
+        user_id, since)
+    ) or (0, 0)
+    return {'approved': row[0], 'kicked_back': row[1]}
+
+
 def _run_migrations(conn):
     from app.migrations import MIGRATIONS
     conn.execute("""
@@ -849,10 +850,7 @@ def _run_migrations(conn):
 
 def get_db_connection():
     # timeout=1.0 sets SQLite's own busy handler, so every statement already
-    # retries internally (at sub-second intervals) for up to 1s before raising
-    # "database is locked" -- kept short so a single attempt can't silently
-    # eat many seconds. _with_lock_retry then adds up to 25 further attempts
-    # at a ~0.1s cadence around every write in this module.
+    # retries internally for up to 1s before raising "database is locked" 
     conn = sqlite3.connect(DB_PATH, timeout=1.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE;")

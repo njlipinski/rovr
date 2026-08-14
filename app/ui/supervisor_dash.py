@@ -150,8 +150,8 @@ def _master_status_counts(table):
 
 class SupervisorDashboard(Dashboard):
 
-    def __init__(self, conn, user):
-        super().__init__(conn, user)
+    def __init__(self, conn, user, away_since=None):
+        super().__init__(conn, user, away_since=away_since)
         self._build_main_content()
 
     # ── Build UI ────────────────────────────────────────────────────────
@@ -412,6 +412,7 @@ class SupervisorDashboard(Dashboard):
             done_msg="{done} scene(s) returned to the supervisor pool.",
             none_msg="None of the selected scenes could be released.",
             partial_msg="{done} scene(s) released; {skipped} were no longer eligible.",
+            celebrate_empty=False,
         )
 
     # ── Supervisor Pool handlers ──────────────────────────────────────────
@@ -449,7 +450,9 @@ class SupervisorDashboard(Dashboard):
             ),
             "Edit Scene Failed"
         )
-        self.refresh_task_list()
+        # Reassigning a scene can take it out of this supervisor's own queue,
+        # which is a correction rather than a review they finished.
+        self.refresh_task_list(celebrate_empty=False)
 
     def handle_reset_scene(self):
         scene_id = self.selected_id(self.master_table)
@@ -466,4 +469,4 @@ class SupervisorDashboard(Dashboard):
         self._run_db_action(
             lambda: supervisor_reset_scene(self.conn, scene_id, self.user['id']), "Reset Failed"
         )
-        self.refresh_task_list()
+        self.refresh_task_list(celebrate_empty=False)

@@ -138,10 +138,12 @@ def _matching_folders(pancam_path, scene):
 
     # ROI Studio folder names have gone through three conventions, all of which
     # may additionally carry a trailing "_v#" revision tag on the FOLDER only:
-    #   base_name                          (original)
-    #   base_name_v#                       (original, revised)
-    #   base_name_NAME                     (current "stable" — NAME is free-form)
-    #   base_name_NAME_v#                  (current, revised)
+    #   base_name                           (original)
+    #   base_name_v#                        (original, revised)
+    #   base_name_seqver                    (v2)
+    #   base_name_seqver_v#                 (v2, revised)
+    #   base_name_seqver_NAME               (current "stable" — NAME is free-form)
+    #   base_name_seqver_NAME_v#            (current, revised)
     # The files inside a folder are always that folder's own name with the
     # trailing "_v#" stripped — never reconstructed independently.
     def scan(is_match):
@@ -154,23 +156,12 @@ def _matching_folders(pancam_path, scene):
                 continue
             # A directory only counts as a save if it actually holds one.
             if any(os.path.isfile(os.path.join(entry.path, versionless + ext))
-                   for ext in _SAVE_ARTIFACTS):
+                    for ext in _SAVE_ARTIFACTS):
                 found.append((entry.path, versionless))
         return found
 
     # Whether SEQ_VER is folded into the name depends on which ROI Studio
-    # convention was in effect at that particular save, not on whether the DB
-    # happens to have a seq_ver for this scene — a scene can pick up a seq_ver
-    # later while its on-disk folders never had it embedded, and a
-    # folder-scan import never sets one at all.
-    #
-    # Both the exact-name and the seq_ver-agnostic match run, and their results
-    # are unioned. Trying the strict pass alone first (as this did) meant that
-    # for a scene with no seq_ver the only match was the legacy folder, and the
-    # current-convention folder sitting right beside it was never even
-    # considered — which is the opposite of preferring the current convention.
-    # Both patterns are already pinned to this sol, seq and PMA, so the union
-    # cannot pull in another scene's folder.
+    # convention was in effect at that particular save.
     seq_id_lower = seq_id.lower()
     strict_names = {f"Sol{sol:04d}_{seq_id_lower}_PMA{pma}"}
     if seq_ver is not None:
@@ -194,7 +185,7 @@ def _folder_rank(path, versionless):
     mtimes without producing a newer save, and some multi-folder
     scenes on the drive have the two orderings disagreeing. So version leads,
     and mtime only breaks a genuine tie (an untagged folder against an explicit
-    _v1). Convention outranks both — see _CURRENT_CONVENTION_RE."""
+    _v1). Convention outranks both (see _CURRENT_CONVENTION_RE)."""
     mtimes = [
         os.path.getmtime(os.path.join(path, versionless + ext))
         for ext in _SAVE_ARTIFACTS
@@ -208,12 +199,7 @@ def _folder_rank(path, versionless):
 
 
 def find_scene_folder(pancam_path, scene):
-    """Return the one folder holding this scene's current save, or None.
-
-    This is the single place a scene's folder is chosen. Everything else —
-    .fits, .sel, the panel images, the summary slide — is derived from what
-    this returns, so a scene can never be read out of two folders at once.
-    Never rank folders anywhere else."""
+    """Return the one folder holding this scene's current save, or None."""
     folders = _matching_folders(pancam_path, scene)
     if not folders:
         return None
@@ -230,10 +216,7 @@ def scene_file(folder, ext):
 
 
 def find_scene_file(pancam_path, scene, ext):
-    """Return this scene's file with the given extension, or None.
-
-    Resolves the scene's folder first and reads only from there — it never
-    picks a file from a different folder than its siblings came from."""
+    """Return this scene's file with the given extension, or None."""
     return scene_file(find_scene_folder(pancam_path, scene), ext)
 
 
