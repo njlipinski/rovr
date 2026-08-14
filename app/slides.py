@@ -76,7 +76,7 @@ _PLACEHOLDER_FS = 24
 
 # Row geometry for the metadata table, in pixels within its cell.
 #
-# The palette has 15 colours, so a scene cannot hold more than 15 ROIs, and the
+# The palette has 15 colors, so a scene cannot hold more than 15 ROIs, and the
 # body type is sized so exactly that many rows fit a cell. That fixes the type
 # size for every slide rather than letting it drift with ROI count. A table with
 # fewer rows spreads them out (up to _ROW_STRETCH times the base height) instead
@@ -106,11 +106,10 @@ def missing_panels(folder):
     """Captions of the panel images this folder doesn't have.
 
     Absence is not necessarily a fault. A right-eye RGB needs enough right-eye
-    filters in the source observation to composite one, and plenty of Pancam
-    observations never captured them — scenes have been re-saved half a dozen
-    times over a month and produced the same gap every time, because the frames
-    were never taken. Those panels render as placeholders rather than failing,
-    and are reported so a human can judge which gaps are real."""
+    filters in the source observation to composite one, and some Pancam
+    observations never captured them. Those panels render as placeholders 
+    rather than failing, and are reported so a human can judge which gaps 
+    are real."""
     if not folder:
         return []
     return [caption for suffix, caption in _LAYOUT
@@ -222,8 +221,7 @@ def _fitted_body_fs(chars, row_px, width_px):
     height that lets _ROWS_PER_CELL rows fit, and the cell width that lets the
     widest row print without being cut.
 
-    Sizing on the row alone was what produced a table of 'nearfie...' in every
-    column. Below _BODY_FS_MIN the width constraint is abandoned rather than
+    Below _BODY_FS_MIN the width constraint is abandoned rather than
     shrinking further, and _ellipsize trims what still doesn't fit."""
     by_row = row_px * _BODY_FS_RATIO
     needed = sum(c + _GUTTER_CHARS for c in chars) or 1
@@ -296,9 +294,8 @@ def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
             ax.text(tx(xs[i + 1]), mid, _ellipsize(value, widths[i + 1], body_fs),
                     fontsize=body_fs, color='#222222', ha='left', va='center')
 
-        # The long fields share one continuation line under the row, so a scene
-        # carrying both a subtype and a description still costs a row two lines,
-        # not three.
+        # The continuation fields share one line under the row, so a row costs
+        # two lines however many of them it carries, not one line each.
         extra = [v for v in (_display_value(k, roi.get(k)) for k, _ in cont_fields) if v]
         if extra:
             ax.text(tx(indent), ty(top + row_px * 0.74),

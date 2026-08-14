@@ -23,13 +23,17 @@ def claim_from_pool(conn, scene_id, analyst_id):
     return db_claim_from_pool(conn, scene_id, analyst_id)
 
 
-def submit_scene(conn, scene_id, analyst_id):
+def submit_scene(conn, scene_id, analyst_id, comments=None):
     """analyst 1 submits a scene. Claimed (1) goes to peer review (2, pool).
     Needs revision (4) bypasses peer review: if a supervisor is already
     associated with the scene (set by a prior supervisor kick-back), it goes
     straight into that supervisor's queue (6); otherwise it's a peer-review
     kick-back with no supervisor attached yet, so it goes to the general
-    supervisor pool (5)."""
+    supervisor pool (5).
+
+    `comments` rides along into the audit log the same way a review comment
+    does, so an analyst resubmitting from the notes dialog can say what they
+    changed without leaving a separate note."""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] not in (SceneStatus.CLAIMED, SceneStatus.NEEDS_REVISION):
         raise ValueError("Only claimed or needs-revision scenes can be submitted")
@@ -43,7 +47,7 @@ def submit_scene(conn, scene_id, analyst_id):
     else:
         new_status, claimed_by, stage = SceneStatus.PENDING_SUPERVISOR, None, Stage.RESUBMISSION
 
-    record_submission(conn, scene_id, new_status, claimed_by, analyst_id, stage, Decision.SUBMITTED, None)
+    record_submission(conn, scene_id, new_status, claimed_by, analyst_id, stage, Decision.SUBMITTED, comments)
 
 
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):

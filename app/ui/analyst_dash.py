@@ -244,14 +244,21 @@ class AnalystDashboard(Dashboard):
     # ── My Queue handlers ───────────────────────────────────────────────
 
     def _review_callbacks(self, table, scene_id):
-        """A peer reviewer holding a scene can act on it straight from the
-        notes dialog. Only applies to their own queue, and only while the
-        scene is actually in review."""
-        if table is self.my_queue_table and self.selected_status(table) == SceneStatus.IN_REVIEW:
+        """Act on a scene straight from the notes dialog. Only applies to the
+        analyst's own queue: a peer reviewer approves or kicks back a scene they
+        hold for review, and an owner resubmits one that was kicked back to them
+        -- reading the reason and fixing it are the same sitting. Status 4 in
+        this table is owner-only by get_analyst_queue's own WHERE clause."""
+        if table is not self.my_queue_table:
+            return {}
+        status = self.selected_status(table)
+        if status == SceneStatus.IN_REVIEW:
             return {
                 'on_approve':   lambda comment: self._do_approve(scene_id, comment),
                 'on_kick_back': lambda comment: self._do_kick_back(scene_id, comment),
             }
+        if status == SceneStatus.NEEDS_REVISION:
+            return {'on_submit': lambda comment: self._do_submit(scene_id, comment)}
         return {}
 
     def _my_queue_scene_id(self):
@@ -260,23 +267,28 @@ class AnalystDashboard(Dashboard):
             QMessageBox.warning(self, "No Selection", "Select a scene first.")
         return scene_id
 
-    def handle_submit(self):
-        """Submit a scene the analyst owns. A submission from status 4 lands in
-        supervisor review directly (status 6 if a supervisor is already
-        attached, else the status-5 pool), so the summary slide is built here
-        too — see _build_slide_if_supervisor_bound."""
-        scene_id = self._my_queue_scene_id()
-        if scene_id is None:
-            return
+    def _do_submit(self, scene_id, comment=None):
+        """Owner submits a scene they hold (status 1) or resubmits one that was
+        kicked back (status 4). A submission from status 4 lands in supervisor
+        review directly (status 6 if a supervisor is already attached, else the
+        status-5 pool), so the summary slide is built here too — see
+        _build_slide_if_supervisor_bound."""
         ok = self._run_db_action(
-            lambda: submit_scene(self.conn, scene_id, self.user['id']), "Submit Failed"
+            lambda: submit_scene(self.conn, scene_id, self.user['id'], comment), "Submit Failed"
         )
         problem = self._build_slide_if_supervisor_bound(scene_id) if ok else None
         self.refresh_task_list()
-        if ok:
-            QMessageBox.information(self, "Submitted", "Scene submitted.")
         if problem:
             QMessageBox.warning(self, "Summary Slide Not Built", problem)
+        return ok
+
+    def handle_submit(self):
+        """Submit the selected scene from the tray button."""
+        scene_id = self._my_queue_scene_id()
+        if scene_id is None:
+            return
+        if self._do_submit(scene_id):
+            QMessageBox.information(self, "Submitted", "Scene submitted.")
 
     def _build_slide_if_supervisor_bound(self, scene_id):
         """Build the summary slide if this scene has just moved into supervisor

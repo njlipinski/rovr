@@ -41,10 +41,12 @@ _FALLBACK_FIELDS = (
     ('DESCRIPTION',     'Description'),
 )
 
-# Fields drawn on a line under their row rather than in a table column. Both are
-# far longer than any other field, and left in the grid they set the column
-# widths for the whole table and force the type down to fit them.
-CONTINUATION_FIELDS = ('FEATURE_SUBTYPE', 'DESCRIPTION')
+# Fields drawn on a line under their row rather than in a table column, in the
+# order they read on that line. Description is far longer than any other field
+# and left in the grid it sets the column widths for the whole table. Float and
+# texture join it to give the grid back to the fields that identify an ROI; they
+# carry no label there, since the values read clearly enough in context.
+CONTINUATION_FIELDS = ('FLOAT', 'TEXTURE', 'DESCRIPTION')
 
 # Header cards that identify an HDU as an ROI rather than describing the scene.
 _ROI_NAME_KEY = 'NAME'

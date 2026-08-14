@@ -59,7 +59,7 @@ _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
 
 
 def parse_scene_key(scene_key):
-    """Return (rover, sol, seq_id, obs) from a scene_key, or ('','',scene_key,'0') if unparseable."""
+    """Return (rover, sol, seq_id, obs) from a scene_key, or ('','',scene_key,'0') if unparsable."""
     m = _KEY_RE.match(scene_key)
     if m:
         return m.group(1), m.group(2), m.group(3), m.group(4)
@@ -593,11 +593,13 @@ class NotesDialog(SizePersistentDialog):
                 format_row=_format_thread_row, add_note_fn=add_note,
                 update_note_fn=update_note, delete_note_fn=delete_note,
                 is_supervisor=False, on_approve=None, on_kick_back=None,
-                on_open_roi=None, on_summary_slide=None):
-        """on_approve/on_kick_back, if given, are callables (comment: str | None) -> bool
-        (True on success). When set, the dialog shows an Approve/Kick Back button that
-        sends the current note-box text as the review comment and closes the dialog on
-        success, so a reviewer can leave a note and act on it without a second dialog.
+                on_submit=None, on_open_roi=None, on_summary_slide=None):
+        """on_approve/on_kick_back/on_submit, if given, are callables
+        (comment: str | None) -> bool (True on success). When set, the dialog shows the
+        matching button, which sends the current note-box text as the comment and closes
+        the dialog on success, so a user can leave a note and act on it without a second
+        dialog. on_submit is the owner's side of that: an analyst reading why their scene
+        was kicked back can resubmit from the same window once they have fixed it.
 
         on_open_roi, if given, is a callable () -> None that launches ROI Studio for
         this scene, so a reviewer can jump to ROI Studio without closing the note thread.
@@ -617,6 +619,7 @@ class NotesDialog(SizePersistentDialog):
         self._is_supervisor = is_supervisor
         self._on_approve = on_approve
         self._on_kick_back = on_kick_back
+        self._on_submit = on_submit
         self._on_open_roi = on_open_roi
         self._on_summary_slide = on_summary_slide
         self.setWindowTitle(f"{title} — {scene_name}")
@@ -679,6 +682,11 @@ class NotesDialog(SizePersistentDialog):
             approve_btn.clicked.connect(self._on_approve_clicked)
             color_button(approve_btn)
             btn_layout.addWidget(approve_btn)
+        if self._on_submit is not None:
+            submit_btn = QPushButton("Submit")
+            submit_btn.clicked.connect(self._on_submit_clicked)
+            color_button(submit_btn)
+            btn_layout.addWidget(submit_btn)
         btn_layout.addWidget(add_btn)
         btn_layout.addWidget(close_btn)
         layout.addWidget(btn_row)
@@ -785,6 +793,11 @@ class NotesDialog(SizePersistentDialog):
     def _on_approve_clicked(self):
         comment = self.input.toPlainText().strip() or None
         if self._on_approve(comment):
+            self.accept()
+
+    def _on_submit_clicked(self):
+        comment = self.input.toPlainText().strip() or None
+        if self._on_submit(comment):
             self.accept()
 
 
@@ -2040,11 +2053,12 @@ class Dashboard(QMainWindow):
         set_scene_viewed_at(scene_id)
         self.refresh_task_list()
 
-    def _show_notes(self, scene_id, scene_name, on_approve=None, on_kick_back=None):
+    def _show_notes(self, scene_id, scene_name, on_approve=None, on_kick_back=None,
+                    on_submit=None):
         NotesDialog(
             self.conn, scene_id, scene_name, self.user['id'], self,
             is_supervisor=(self.user['role'] == Role.SUPERVISOR),
-            on_approve=on_approve, on_kick_back=on_kick_back,
+            on_approve=on_approve, on_kick_back=on_kick_back, on_submit=on_submit,
             on_open_roi=(lambda: self.handle_open_roi(scene_id)),
             on_summary_slide=(lambda: self.handle_open_summary_slide(scene_id)),
         ).exec()
