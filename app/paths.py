@@ -19,17 +19,24 @@ class FolderKind:
 
 class Panel:
     """File-name suffixes for the per-scene images ROI Studio writes beside the
-    .fits/.sel every time an analyst saves. Only three of the five go on a
-    summary slide (see app/slides.py); the other two are listed because they
-    share the convention and are what a caller would reach for to change the
-    slide's panel choice."""
-    LEFT_DCS  = '_left_dcs.png'
-    LEFT_RGB  = '_left_rgb.png'
-    RIGHT_DCS = '_right_dcs.png'
-    RIGHT_RGB = '_right_rgb.png'
-    SPECTRA   = '_spectra.png'
+    .fits/.sel every time an analyst saves. Only some go on a summary slide
+    (see app/slides.py); the rest are listed because they share the convention
+    and are what a caller would reach for to change the slide's panel choice.
 
-    ALL = (LEFT_DCS, LEFT_RGB, RIGHT_DCS, RIGHT_RGB, SPECTRA)
+    The _NAMED variants label each ROI in the image. ROI Studio only started
+    writing them recently and only for the RGB pair, so most saves on R:\\ have
+    the plain images alone. Anything reaching for a _NAMED suffix needs a
+    fallback (see find_panel)."""
+    LEFT_DCS        = '_left_dcs.png'
+    LEFT_RGB        = '_left_rgb.png'
+    LEFT_RGB_NAMED  = '_left_rgb_with_roi_names.png'
+    RIGHT_DCS       = '_right_dcs.png'
+    RIGHT_RGB       = '_right_rgb.png'
+    RIGHT_RGB_NAMED = '_right_rgb_with_roi_names.png'
+    SPECTRA         = '_spectra.png'
+
+    ALL = (LEFT_DCS, LEFT_RGB, LEFT_RGB_NAMED,
+           RIGHT_DCS, RIGHT_RGB, RIGHT_RGB_NAMED, SPECTRA)
 
 
 # Master collection of every scene's summary slide, laid out as
@@ -142,7 +149,7 @@ def _matching_folders(pancam_path, scene):
     #   base_name_v#                        (original, revised)
     #   base_name_seqver                    (v2)
     #   base_name_seqver_v#                 (v2, revised)
-    #   base_name_seqver_NAME               (current "stable" — NAME is free-form)
+    #   base_name_seqver_NAME               (current "stable", NAME is free-form)
     #   base_name_seqver_NAME_v#            (current, revised)
     # The files inside a folder are always that folder's own name with the
     # trailing "_v#" stripped — never reconstructed independently.
@@ -233,6 +240,11 @@ def find_fits_file(pancam_path, scene):
 def find_panel(folder, suffix):
     """Return the path to one of ROI Studio's per-scene images inside `folder`, or None.
 
+    `suffix` may be a tuple of suffixes in preference order, for a panel whose
+    better version is not on every save: the first one present wins. Callers
+    compare the returned file's mtime, so a scene that later gains the
+    preferred image reads as newer and rebuilds on its own.
+
     Normally the file is the folder's own (revision-tag-stripped) name plus the
     suffix. The fallback glob covers folders that predate --fix-panel-names,
     where an early --rename-folders run moved the .fits/.sel but left the
@@ -240,16 +252,21 @@ def find_panel(folder, suffix):
     reach across into another revision."""
     if not folder or not os.path.isdir(folder):
         return None
-    exact = os.path.join(folder, versionless_name(os.path.basename(folder)) + suffix)
-    if os.path.isfile(exact):
-        return exact
-    matches = [
-        os.path.join(folder, n) for n in os.listdir(folder)
-        if n.lower().endswith(suffix.lower())
-    ]
-    if not matches:
-        return None
-    return max(matches, key=os.path.getmtime)
+    suffixes = (suffix,) if isinstance(suffix, str) else tuple(suffix)
+    names = None
+    for s in suffixes:
+        exact = os.path.join(folder, versionless_name(os.path.basename(folder)) + s)
+        if os.path.isfile(exact):
+            return exact
+        if names is None:
+            names = os.listdir(folder)
+        matches = [
+            os.path.join(folder, n) for n in names
+            if n.lower().endswith(s.lower())
+        ]
+        if matches:
+            return max(matches, key=os.path.getmtime)
+    return None
 
 
 def summary_slide_paths(pancam_path, scene, folder):

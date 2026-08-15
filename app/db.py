@@ -36,6 +36,7 @@ def _retry_on_lock(fn, retries, delay, on_error=None):
             if 'locked' not in str(e).lower() or attempt == retries - 1:
                 raise
             time.sleep(delay)
+    raise ValueError("retries must be >= 1")
 
 
 def _with_lock_retry(conn, fn, retries=_WRITE_RETRIES, delay=_RETRY_DELAY):
@@ -223,6 +224,8 @@ def claim_for_review(conn, scene_id, analyst_id):
 def release_scene(conn, scene_id):
     """release a claimed scene back to the appropriate pool (1 -> 0, or 3 -> 2)"""
     scene = get_scene_by_id(conn, scene_id)
+    if scene is None:
+        return
     if scene['status'] == 1:
         # Returning to Scene Pool — clear ownership so the next claimer starts fresh
         sql = """UPDATE scenes
@@ -389,6 +392,8 @@ def record_force_release(conn, scene_id, supervisor_id, stage, decision, comment
     action. Caller is responsible for checking the scene has a releasable
     claim before calling this."""
     scene = get_scene_by_id(conn, scene_id)
+    if scene is None:
+        return
     if scene['status'] == 6:
         release_sql = "UPDATE scenes SET status = 5, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?"
     elif scene['status'] == 1:

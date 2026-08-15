@@ -66,7 +66,7 @@ _OLD_ROI_FOLDER_RE = re.compile(r'^Sol(\d{4})_p(\d{4})(?:v\d+)?_PMA(\d+)$')
 # ── Conversion helpers ────────────────────────────────────────────────────────
 
 def _to_int(val):
-    """Convert a CSV string to int, returning None for blank/unparseable values."""
+    """Convert a CSV string to int, returning None for blank/unparsable values."""
     if val is None:
         return None
     v = str(val).strip()
@@ -79,7 +79,7 @@ def _to_int(val):
 
 
 def _to_float(val):
-    """Convert a CSV string to float, returning None for blank/unparseable values."""
+    """Convert a CSV string to float, returning None for blank/unparsable values."""
     if val is None:
         return None
     v = str(val).strip()
@@ -352,7 +352,7 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
 
             sol = _to_int(sol_str)
             if sol is None:
-                print(f"  Warning: skipping row {total_rows}. Unparseable SOL '{sol_str}'.")
+                print(f"  Warning: skipping row {total_rows}. Unparsable SOL '{sol_str}'.")
                 continue
             if obs_ix is None:
                 obs_ix = 0
@@ -777,10 +777,12 @@ def backup_scenes(pancam_root, db_path):
         sol_dirs = sorted(
             d for d in rover_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None
         )
+        print(f"{rover}: {len(sol_dirs)} sol directories")
         for sol_dir in sol_dirs:
             working_dir = sol_dir / FolderKind.WORKING
             if not working_dir.exists():
                 continue
+            sol_copied = 0
             for item in working_dir.rglob("*"):
                 if item.is_dir():
                     continue
@@ -791,6 +793,11 @@ def backup_scenes(pancam_root, db_path):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(item, dest)
                 copied += 1
+                sol_copied += 1
+            # Only sols with new files report, so a re-run stays quiet
+            if sol_copied:
+                rel = working_dir.relative_to(pancam_path)
+                print(f"  {rel}: {sol_copied} copied", flush=True)
 
     print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
 

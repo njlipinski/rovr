@@ -3,7 +3,7 @@
 
 A summary slide is one PDF carrying everything a supervisor needs to review a
 scene: the left-eye DCS with the analyst's ROI boxes, the right-eye RGB for
-context, the spectra plot, and a table of the analyst's per-ROI metadata — in a
+context, the spectra plot, and a table of the analyst's per-ROI metadata, in a
 2x2 grid.
 
 The three image panels are not drawn here. ROI Studio writes them beside the
@@ -13,11 +13,8 @@ enlarged; anything smaller than its cell is centred with margin.
 
 A scene can have anywhere from zero to fifteen ROIs, one per palette colour, and
 the metadata table's type is sized so all fifteen fit a cell. Anything beyond
-that spills onto a second page rather than being truncated.
+that spills onto a second page rather than being truncated."""
 
-No Qt and no SQL — a slide is a pure function of a scene row and the Pancam
-tree, so it can be rendered off the UI thread and tested without a database.
-"""
 import os
 
 import matplotlib.image as mpimg
@@ -38,11 +35,15 @@ from app.roi_metadata import (
 # is deliberate and not symmetric: the DCS carries the ROI boxes that key to
 # the spectra curves, and the opposite eye's RGB gives true-colour context.
 # The metadata cell has no source image (suffix None).
+#
+# The RGB cell prefers the ROI-labelled image and falls back to the plain one,
+# since only recent saves have the labelled version. The DCS cell has no
+# labelled counterpart yet; give it the same treatment when one exists.
 _LAYOUT = (
-    (Panel.LEFT_DCS,  "Left eye — DCS"),
-    (Panel.RIGHT_RGB, "Right eye — RGB"),
-    (Panel.SPECTRA,   "Spectra"),
-    (None,            "ROI metadata"),
+    (Panel.LEFT_DCS,                            "Left eye DCS"),
+    ((Panel.RIGHT_RGB_NAMED, Panel.RIGHT_RGB),  "Right eye RGB"),
+    (Panel.SPECTRA,                             "Spectra"),
+    (None,                                      "ROI metadata"),
 )
 
 # Cell size matches ROI Studio's native DCS/RGB output, so the two panels that
@@ -284,7 +285,7 @@ def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
         ))
         ax.text(tx(indent), mid,
                 _ellipsize(str(roi.get('name', '')),
-                           widths[0] - _SWATCH_PX - _SWATCH_GAP_PX, body_fs),
+                            widths[0] - _SWATCH_PX - _SWATCH_GAP_PX, body_fs),
                 fontsize=body_fs, color='#222222', ha='left', va='center')
 
         for i, (key, _label) in enumerate(col_fields):
@@ -344,19 +345,19 @@ def build_summary_slide(pancam_path, scene, folder=None):
 
     Returns (beside_sources_path, master_path). Raises FileNotFoundError if the
     scene has no ROI Studio folder yet, and OSError if a write fails. A missing
-    panel or unreadable .fits is not an error — that cell renders as a
+    panel or unreadable .fits is not an error. That cell renders as a
     placeholder, since a slide that is three-quarters useful beats no slide.
     """
     folder = folder or find_scene_folder(pancam_path, scene)
     if not folder:
         raise FileNotFoundError(
-            f"No ROI Studio folder found for scene '{scene['name']}' — "
+            f"No ROI Studio folder found for scene '{scene['name']}' "
             "nothing has been saved for it yet."
         )
 
     # Only a missing .fits stops a slide. Without it there is no ROI metadata
     # and no way to tell an interrupted save from a complete one, so it is
-    # reported rather than guessed at — and never patched from a neighbouring
+    # reported rather than guessed at, and never patched from a neighboring
     # revision, which is the folder-mixing this module exists to prevent.
     # Missing panels are different: see missing_panels() for why they are
     # frequently legitimate. Those cells render as placeholders.
@@ -376,16 +377,16 @@ def build_summary_slide(pancam_path, scene, folder=None):
     # any name the tree actually holds.
     title_y = MARGIN_PX + TITLE_PX * 0.55
     _fig_text(fig, MARGIN_PX, title_y, scene['name'],
-              fontsize=_TITLE_FS, color=_TITLE_C, ha='left', va='center')
+                fontsize=_TITLE_FS, color=_TITLE_C, ha='left', va='center')
     _fig_text(fig, WIDTH_PX - MARGIN_PX, title_y,
-              _scene_subtitle(scene, len(rois)),
-              fontsize=_SUB_FS, color=_SUB_C, ha='right', va='center')
+                _scene_subtitle(scene, len(rois)),
+                fontsize=_SUB_FS, color=_SUB_C, ha='right', va='center')
 
     overflow_from = None
     for i, (suffix, caption) in enumerate(_LAYOUT):
         x, y = _cell_origin(i)
         _fig_text(fig, x + 4, y + CAPTION_PX * 0.65, caption,
-                  fontsize=_CAPTION_FS, color=_CAPTION_C, ha='left', va='center')
+                    fontsize=_CAPTION_FS, color=_CAPTION_C, ha='left', va='center')
         cell_y = y + CAPTION_PX
 
         if suffix is None:
@@ -430,8 +431,8 @@ def _overflow_page(scene, rois, fields, start):
     cell holds."""
     fig = _new_figure()
     _fig_text(fig, MARGIN_PX, MARGIN_PX + TITLE_PX * 0.42,
-              f"{scene['name']} — ROI metadata (continued)",
-              fontsize=_TITLE_FS - 4, color=_TITLE_C, ha='left', va='center')
+                f"{scene['name']} ROI metadata (continued)",
+                fontsize=_TITLE_FS - 4, color=_TITLE_C, ha='left', va='center')
     width = WIDTH_PX - MARGIN_PX * 2
     height = HEIGHT_PX - MARGIN_PX * 2 - TITLE_PX
     _draw_roi_table(fig, MARGIN_PX, MARGIN_PX + TITLE_PX, rois, fields,
@@ -452,7 +453,7 @@ def _write_slide(figures, dest):
                     pdf.savefig(fig, facecolor=fig.get_facecolor())
         else:
             figures[0].savefig(tmp, format=SUMMARY_FORMAT,
-                               facecolor=figures[0].get_facecolor())
+                                facecolor=figures[0].get_facecolor())
         os.replace(tmp, dest)
     except BaseException:
         if os.path.exists(tmp):
