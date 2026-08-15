@@ -1,94 +1,15 @@
 #!/usr/bin/env python3
-"""Import Pancam scenes into the ROVR database.
+"""ROVR maintenance toolbox: scene import, R:\\ drive upkeep, and one-off migrations.
 
-Primary method: CSV observation table (--csv path/to/obs_table.csv)
-    Groups rows by (ROVER, SOL, SEQ_ID, obs_ix) to form unique scenes.
-    All 33 CSV columns are stored in the DB; re-running is incremental (skips
-    existing scene_keys) — except PMA, which is re-synced from the CSV for
-    already-existing scenes if it differs, since PMA drift between the DB
-    and the actual on-disk ROI Studio folder breaks "Open in ROI Studio".
+Run with no arguments for the command list, or `<command> --help` for one
+command's options. Each task function below carries the detail on what it does
+and why it is safe to re-run.
 
-Fallback method: folder scan (default, no flag needed)
-    Walks MERA/####/iof and MERB/####/iof directories looking for
-    Pancam IOF .IMG files. obs_ix defaults to 0 (single-pointing assumption).
-
-Additional utility: --build-folders
-    Ensures a named subfolder (default: working) exists inside every existing
-    rover/#### directory.
-
-Migration utility: --restructure-folders
-    One-off move of the old rover/<kind>/solNNNN layout into the new
-    rover/NNNN/<kind> layout (dropping the 'sol' prefix), for kind in
-    iof, edr, practice, working. Safe to re-run — skips anything already
-    migrated or missing.
-
-Migration utility 2: --rename-folders
-    One-off update to rename folder/file names.  Automated script that will crawl 
-    thru R:\\Rice\\Pancam\\MERA\\####\\working\\<folder> and rename folders and 
-    files to the new naming convention. Both the folder and the FITS file contained
-    within will be renamed.  The new naming convention is as follows:
-        Old formats:
-            Sol####_p####_PMA# (where PMA can have anywhere from 1-4 #'s and no leading 0's)
-            Sol####_p####v#_PMA# (where v and PMA can have anywhere from 1-4 #'s and no leading 0's)
-        New format:
-            Sol####_p####v#_PMA#_<NAME> (where v and PMA can have anywhere from 1-4 #'s and no leading 0's, 
-            and <NAME> is the name of the scene in the database)
-    any _v# version tags appended to the end of a folder are preserved in the folder name,
-    and the FITS file will still omit the version tag.
-    the v# between SEQID and PMA is SEQ_VER, and is found in the database.
-    The <NAME> is also found in the database, and is the name of the scene.
-    The .png panels ROI Studio writes beside the FITS are renamed along with it.
-
-Migration utility 3: --fix-panel-names
-    Repairs folders that an earlier --rename-folders run left half-migrated: it
-    renamed the folder and its .fits/.sel but not the .png panels beside them,
-    so those images still carry the pre-migration stem. Renames any panel whose
-    stem doesn't match its folder. Safe to re-run.
-
-Backup utility: --backup
-    Creates a backup of the database file and the 'working' directories for
-    both rovers (includes the fits and sel files),
-
-Utility: --build-slides
-    Builds summary slides for scenes that reached a supervisor before slides
-    existed (default statuses 5,6,7 -- override with --slide-status). Skips any
-    slide already newer than everything it was built from, so it is safe to
-    re-run and safe to interrupt. Scenes whose folder is incomplete are listed
-    at the end rather than stopping the run.
-
-Utility: --copy-approved
-    Copies the latest .fits file for every approved scene into
-    <path>\\ready_for_asdf. Safe to re-run — skips any scene whose destination
-    file already exists.
-
-Usage:
-    python setup/import_scenes.py --csv obs_table.csv
-    python setup/import_scenes.py --csv obs_table.csv --dry-run
-
-    python setup/import_scenes.py
-    python setup/import_scenes.py --path "R:\\Rice\\Pancam"
-    python setup/import_scenes.py --dry-run
-
-    python setup/import_scenes.py --build-folders
-    python setup/import_scenes.py --build-folders --subfolder edr
-
-    python setup/import_scenes.py --restructure-folders
-    python setup/import_scenes.py --restructure-folders --dry-run
-
-    python setup/import_scenes.py --rename-folders
-    python setup/import_scenes.py --rename-folders --dry-run
-
-    python setup/import_scenes.py --fix-panel-names
-    python setup/import_scenes.py --fix-panel-names --dry-run
-
-    python setup/import_scenes.py --wipe
-
-    python setup/import_scenes.py --build-slides --dry-run
-    python setup/import_scenes.py --build-slides
-    python setup/import_scenes.py --build-slides --slide-status 7 --force
-
-    python setup/import_scenes.py --copy-approved
-    python setup/import_scenes.py --copy-approved --dry-run
+    python setup/util.py                          # list commands
+    python setup/util.py import obs_table.csv
+    python setup/util.py backup
+    python setup/util.py build-slides --dry-run
+    python setup/util.py migrate --help
 """
 
 import csv
@@ -99,6 +20,7 @@ import sqlite3
 import sys
 import time
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -118,7 +40,7 @@ except ImportError:
 # and build_folders, which both operate on the current rover/####/<kind> layout.
 _SOL_RE = re.compile(r'^(\d{4})$')
 
-# Old sol folder pattern ('solNNNN') — used only by --restructure-folders to
+# Old sol folder pattern ('solNNNN') — used only by restructure_folders() to
 # find sol directories still in the pre-migration rover/<kind>/solNNNN layout.
 _OLD_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
 
@@ -129,7 +51,7 @@ _STEM_LEN = 27
 
 # Trailing ROI Studio folder "revision" tag — unrelated to SEQ_VER, just a
 # manual re-save marker analysts append to a folder name. Preserved as-is by
-# --rename-folders and never carried onto the .fits/.sel file names inside,
+# rename_folders() and never carried onto the .fits/.sel file names inside,
 # mirroring app/ui/dashboard.py's _find_scene_file convention.
 _REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
 
@@ -224,7 +146,11 @@ def _scan_sol(iof_dir, rover, sol):
 
 
 def import_scenes_from_folders(conn, pancam_root, dry_run=False):
-    """Walk ####/iof directories for both rovers and import scenes by folder scan."""
+    """Walk ####/iof directories for both rovers and import scenes by folder scan.
+
+    Fallback for when there is no CSV observation table. Only the columns the
+    filenames themselves carry are populated.
+    """
     pancam_path = Path(pancam_root)
     rovers = ["MERA", "MERB"]
 
@@ -274,8 +200,8 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
                         # column default, which on an existing DB predates the
                         # switch to storing UTC.
                         """INSERT INTO scenes
-                           (name, scene_key, status, rover, sol, seq_id, obs_ix, updated_at)
-                           VALUES (?, ?, 0, ?, ?, ?, ?, datetime('now'))""",
+                            (name, scene_key, status, rover, sol, seq_id, obs_ix, updated_at)
+                            VALUES (?, ?, 0, ?, ?, ?, ?, datetime('now'))""",
                         (s['name'], s['scene_key'], s['rover'], s['sol'], s['seq_id'], s['obs_ix']),
                     )
                 if new_scenes:
@@ -314,27 +240,33 @@ def import_scenes_from_folders(conn, pancam_root, dry_run=False):
 _INVALID_FILTERS = frozenset({'L0', 'L1', 'L8', 'R8'})
 
 
-# Maps (ROVER, SOL, SEQ_ID, obs_ix) -> representative dict, one row per unique
-# scene. Subsequent rows for the same scene (same composite key, different
-# filter/eye) are counted but not stored.
-#
-# WHICH row represents the scene matters for one column only: pma. The on-disk
-# ROI Studio working/ folder embeds PMA in its name, and find_scene_folder()
-# rebuilds that name from the stored pma — so a scene whose stored pma differs
-# from the one in its folder name simply has no findable .fits. The two frames
-# of an observation can disagree: PMA comes from ROVER_MOTION_COUNTER[3], and
-# the left and right cameras sit at slightly different mast angles.
-#
-# ROI Studio takes it from the FIRST row of the observation once sorted by
-# SCLK, i.e. the earliest-acquired frame, after discarding non-IOF products and
-# the filters in _INVALID_FILTERS. That is usually a left-eye frame, which is
-# why preferring the L-eye row worked for most scenes — but in observations
-# where the right eye was imaged first it is a right-eye frame, and those
-# scenes became unfindable. So the representative is chosen the same way ROI
-# Studio does rather than by eye. See ADR-026.
-#
-# This mirrors sparc's scan_pcam_files() + load_cube(): if its ordering or
-# filtering changes, this must change with it.
+def _row_rank(row):
+    """Sort key picking which CSV row of an observation represents the scene.
+
+    Only matters for PMA. The on-disk ROI Studio working/ folder
+    embeds PMA in its name and find_scene_folder() rebuilds that name from the
+    stored PMA, so a scene whose stored PMA differs from its folder's has no
+    findable .fits. The frames of one observation can disagree: PMA comes from
+    ROVER_MOTION_COUNTER[3], and the left and right cameras sit at slightly
+    different mast angles.
+
+    ROI Studio takes PMA from the FIRST frame once sorted by SCLK, after
+    discarding non-IOF products and the filters in _INVALID_FILTERS. Rank 
+    the same way ROI Studio does: usable frames first, then earliest SCLK.
+    Rows it would discard rank last rather than being dropped, so a scene
+    whose every row is filtered out still imports.
+    
+    Mirrors sparc's scan_pcam_files() + load_cube(). If its ordering or
+    filtering changes, this must change with it.
+    """
+    sclk = _to_int(row.get('SCLK'))
+    usable = (
+        (row.get('PRODUCT_TYPE') or '').strip().upper() == 'IOF'
+        and (row.get('FILTER') or '').strip().upper() not in _INVALID_FILTERS
+        and sclk is not None
+    )
+    return (0 if usable else 1, sclk if sclk is not None else float('inf'))
+
 
 def _scene_dict(key, rover, sol, seq_id, obs_ix, name, row):
     return {
@@ -376,17 +308,15 @@ def _scene_dict(key, rover, sol, seq_id, obs_ix, name, row):
 
 def import_scenes_from_csv(conn, csv_path, dry_run=False):
     """Read a CSV observation table and import one scene per unique
-    (ROVER, SOL, SEQ_ID, obs_ix) group. All 33 CSV columns are stored from
-    one representative row of each group — see the comment above _scene_dict
-    for how that row is picked and why it matters.
+    (ROVER, SOL, SEQ_ID, obs_ix) group. All 33 CSV columns are stored from one
+    representative row of each group.
 
-    For scene_keys that already exist, the rest of the row is left alone
-    (see module docstring — re-running is incremental), except PMA. The
-    on-disk ROI Studio working/ folder embeds PMA in its name and
-    find_scene_folder() rebuilds that name from the stored value, so the two
-    must agree or the scene's .fits becomes unreachable. If the stored pma
-    doesn't match the representative row's, it's corrected here rather than
-    requiring a full re-import."""
+    Re-running is incremental. For scene_keys that already exist, the rest of
+    the row is left alone, except PMA. The on-disk ROI Studio working/ folder
+    embeds PMA in its name and find_scene_folder() rebuilds that name from 
+    the stored value, so the two must agree or the scene's .fits becomes
+    unreachable. If the stored PMA doesn't match the representative row's,
+    it's corrected here rather than requiring a full re-import."""
 
     path = Path(csv_path)
     if not path.exists():
@@ -429,18 +359,7 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
 
             key = f"{rover}/sol{sol:04d}/{seq_id}/obs{obs_ix}"
             row_counts[key] = row_counts.get(key, 0) + 1
-            # Rank rows the way sparc orders an observation's frames, so the
-            # representative is the one ROI Studio reads PMA from: usable
-            # frames first, then earliest SCLK. Rows sparc would discard are
-            # kept as a last resort so a scene whose every row is filtered out
-            # still imports rather than vanishing.
-            sclk = _to_int(row.get('SCLK'))
-            usable = (
-                (row.get('PRODUCT_TYPE') or '').strip().upper() == 'IOF'
-                and (row.get('FILTER') or '').strip().upper() not in _INVALID_FILTERS
-                and sclk is not None
-            )
-            rank = (0 if usable else 1, sclk if sclk is not None else float('inf'))
+            rank = _row_rank(row)
             if key not in groups or rank < group_rank[key]:
                 groups[key] = _scene_dict(key, rover, sol, seq_id, obs_ix, name, row)
                 group_rank[key] = rank
@@ -680,7 +599,7 @@ def rename_folders(conn, pancam_root, dry_run=False):
                     # follow the same stem and have to move with it — leaving
                     # them behind is what stranded older folders' images under
                     # a name that no longer matches anything (see
-                    # --fix-panel-names, which repairs those).
+                    # fix_panel_names(), which repairs those).
                     #
                     # Renaming the files bumps this folder's own mtime, which
                     # is what Explorer sorts by, so it is captured first and
@@ -708,11 +627,11 @@ def rename_folders(conn, pancam_root, dry_run=False):
 def fix_panel_names(pancam_root, dry_run=False):
     """Rename ROI Studio's .png panels to match the folder they sit in.
 
-    --rename-folders originally moved only the .fits/.sel when it renamed a
+    rename_folders() originally moved only the .fits/.sel when it renamed a
     folder, so every folder it touched still holds images under the
     pre-migration stem — e.g. Sol0007_p2530_PMA791_left_dcs.png inside
     Sol0007_p2530v1_PMA791_pancam_magic_carpet. Those folders look already
-    migrated to --rename-folders and are skipped by it, so they need this pass.
+    migrated to rename_folders() and are skipped by it, so they need this pass.
 
     Only files ending in one of the known panel suffixes are considered, and a
     file is renamed only if its stem differs from the folder's own
@@ -925,7 +844,7 @@ def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False
             gaps = missing_panels(folder)
             if gaps:
                 gapped.append((scene['name'], SceneStatus.LABELS.get(scene['status']),
-                               os.path.basename(folder), gaps))
+                                os.path.basename(folder), gaps))
 
             note = "  [dry run] would build" if dry_run else "  built"
             if gaps:
@@ -997,217 +916,186 @@ def copy_approved_fits(conn, pancam_root, dry_run=False):
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="import_scenes",
-        description="Import Pancam scenes from the Rice drive into the ROVR database.",
-    )
-    parser.add_argument(
-        "--path",
-        default=PANCAM_PATH,
-        help="Root Pancam folder containing MERA/ and MERB/ subdirectories "
-            "(defaults to PANCAM_PATH in config.py)",
-    )
-    parser.add_argument(
-        "--csv",
-        metavar="FILE",
-        help="Path to a CSV observation table (primary import method).",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be imported without writing to the database.",
-    )
-    parser.add_argument(
-        "--build-folders",
-        action="store_true",
-        help="Ensure a subfolder (see --subfolder) exists under every rover/#### directory.",
-    )
-    parser.add_argument(
-        "--subfolder",
-        default="working",
-        metavar="NAME",
-        help="Subfolder name to create under each rover/#### directory (default: working).",
-    )
-    parser.add_argument(
-        "--restructure-folders",
-        action="store_true",
-        help="One-off migration: move rover/<kind>/solNNNN into rover/NNNN/<kind> "
-            "for kind in iof, edr, practice, working.",
-    )
-    parser.add_argument(
-        "--rename-folders",
-        action="store_true",
-        help="One-off migration: rename working/ ROI folders (and their .fits/.sel "
-            "files) from Sol####_p####[v#]_PMA# to Sol####_p####v#_PMA#_<NAME>, "
-            "using SEQ_VER and NAME from the matching DB scene.",
-    )
-    parser.add_argument(
-        "--fix-panel-names",
-        action="store_true",
-        help="Rename ROI Studio .png panels to match the folder they sit in, "
-            "repairing folders whose images were left behind by an earlier "
-            "--rename-folders run.",
-    )
-    parser.add_argument(
-        "--wipe",
-        action="store_true",
-        help="Wipe all scenes and reviews. Users are not affected.",
-    )
-    parser.add_argument(
-        "--backup",
-        action="store_true",
-        help="Create a backup of the database file and the 'working' directories for both rovers (includes fits and sel files)."
-    )
-    parser.add_argument(
-        "--copy-approved",
-        action="store_true",
-        help="Copy the latest .fits file for every approved scene into <path>/ready_for_asdf.",
-    )
-    parser.add_argument(
-        "--build-slides",
-        action="store_true",
-        help="Build summary slides for scenes that reached a supervisor before "
-             "slides existed. Skips any already up to date, so it is safe to "
-             "re-run and safe to interrupt.",
-    )
-    parser.add_argument(
-        "--slide-status",
-        default="5,6,7",
-        metavar="LIST",
-        help="Comma-separated statuses to build slides for (default: 5,6,7 -- "
-             "the scenes a supervisor sees. Earlier statuses get a slide "
-             "automatically when they reach supervisor review).",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="With --build-slides, rebuild every slide even if it is already up to date.",
-    )
-    args = parser.parse_args()
+def _fail(msg):
+    print(f"Error: {msg}")
+    sys.exit(1)
 
-    # --build-folders and --restructure-folders don't need a DB connection
-    if args.build_folders:
-        if not args.path:
-            print("Error: --build-folders requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        build_folders(args.path, args.subfolder)
-        return
 
-    if args.restructure_folders:
-        if not args.path:
-            print("Error: --restructure-folders requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        restructure_folders(args.path, dry_run=args.dry_run)
-        return
+def _pancam_root(args):
+    """Resolve and validate --path, exiting if it is unset or missing."""
+    if not args.path:
+        _fail("no Pancam path. Pass --path or set PANCAM_PATH in config.py.")
+    if not Path(args.path).exists():
+        _fail(f"'{args.path}' does not exist.")
+    return args.path
 
-    if args.rename_folders:
-        if not args.path:
-            print("Error: --rename-folders requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        initialize_db()
-        conn = get_db_connection()
-        try:
-            rename_folders(conn, args.path, dry_run=args.dry_run)
-        finally:
-            conn.close()
-        return
 
-    if args.fix_panel_names:
-        if not args.path:
-            print("Error: --fix-panel-names requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        fix_panel_names(args.path, dry_run=args.dry_run)
-        return
-
-    if args.backup:
-        if not args.path:
-            print("Error: --backup requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not DB_PATH:
-            print("Error: --backup requires DB_PATH in config.py.")
-            sys.exit(1)
-        backup_scenes(args.path, DB_PATH)
-        return
-
-    if args.build_slides:
-        if not args.path:
-            print("Error: --build-slides requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        try:
-            statuses = [int(s) for s in args.slide_status.split(',') if s.strip()]
-        except ValueError:
-            print(f"Error: --slide-status must be a comma-separated list of integers, got '{args.slide_status}'.")
-            sys.exit(1)
-        unknown = [s for s in statuses if s not in SceneStatus.LABELS]
-        if not statuses or unknown:
-            print(f"Error: --slide-status has no valid status values ({unknown or 'empty'}).")
-            sys.exit(1)
-        initialize_db()
-        conn = get_db_connection()
-        try:
-            build_summary_slides(conn, args.path, statuses,
-                                 dry_run=args.dry_run, force=args.force)
-        finally:
-            conn.close()
-        return
-
-    if args.copy_approved:
-        if not args.path:
-            print("Error: --copy-approved requires --path or PANCAM_PATH in config.py.")
-            sys.exit(1)
-        if not Path(args.path).exists():
-            print(f"Error: '{args.path}' does not exist.")
-            sys.exit(1)
-        initialize_db()
-        conn = get_db_connection()
-        try:
-            copy_approved_fits(conn, args.path, dry_run=args.dry_run)
-        finally:
-            conn.close()
-        return
-
+@contextmanager
+def _db():
+    """Open a migrated DB connection, closing it when the command finishes."""
     initialize_db()
     conn = get_db_connection()
     try:
-        if args.wipe:
-            print("WARNING: --wipe will delete all scenes and reviews from the database.")
-            print("Users will not be affected. This cannot be undone.")
-            confirm = input("Type YES to continue: ").strip()
-            if confirm != "YES":
-                print("Cancelled.")
-                sys.exit(0)
-            wipe_scenes(conn)
-            print()
+        yield conn
+    finally:
+        conn.close()
 
+
+def _statuses(raw):
+    """Parse a --status list, exiting unless every entry is a real status."""
+    try:
+        values = [int(s) for s in raw.split(',') if s.strip()]
+    except ValueError:
+        _fail(f"--status must be a comma-separated list of integers, got '{raw}'.")
+    unknown = [s for s in values if s not in SceneStatus.LABELS]
+    if not values or unknown:
+        _fail(f"--status has no valid status values ({unknown or 'empty'}).")
+    return values
+
+
+# ── Command handlers ──────────────────────────────────────────────────────────
+
+def cmd_import(args):
+    with _db() as conn:
         if args.csv:
             import_scenes_from_csv(conn, args.csv, dry_run=args.dry_run)
         else:
-            if not args.path:
-                print("Error: no path specified and PANCAM_PATH is not set in config.py.")
-                print("Provide --path or use --csv for CSV import.")
-                sys.exit(1)
-            if not Path(args.path).exists():
-                print(f"Error: '{args.path}' does not exist.")
-                sys.exit(1)
-            import_scenes_from_folders(conn, args.path, dry_run=args.dry_run)
-    finally:
-        conn.close()
+            import_scenes_from_folders(conn, _pancam_root(args), dry_run=args.dry_run)
+
+
+def cmd_wipe(args):
+    print("WARNING: this deletes all scenes and reviews from the database.")
+    print("Users will not be affected. This cannot be undone.")
+    if input("Type YES to continue: ").strip() != "YES":
+        print("Cancelled.")
+        return
+    with _db() as conn:
+        wipe_scenes(conn)
+
+
+def cmd_backup(args):
+    root = _pancam_root(args)
+    if not DB_PATH:
+        _fail("backup requires DB_PATH in config.py.")
+    backup_scenes(root, DB_PATH)
+
+
+def cmd_build_slides(args):
+    root = _pancam_root(args)
+    statuses = _statuses(args.status)
+    with _db() as conn:
+        build_summary_slides(conn, root, statuses, dry_run=args.dry_run, force=args.force)
+
+
+def cmd_copy_approved(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        copy_approved_fits(conn, root, dry_run=args.dry_run)
+
+
+def cmd_build_folders(args):
+    build_folders(_pancam_root(args), args.subfolder)
+
+
+def cmd_restructure_folders(args):
+    restructure_folders(_pancam_root(args), dry_run=args.dry_run)
+
+
+def cmd_rename_folders(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        rename_folders(conn, root, dry_run=args.dry_run)
+
+
+def cmd_fix_panel_names(args):
+    fix_panel_names(_pancam_root(args), dry_run=args.dry_run)
+
+
+# ── Parser ────────────────────────────────────────────────────────────────────
+
+def build_parser():
+    # Shared options, mixed into only the commands that honor them -- a command
+    # that ignores --dry-run should not advertise it.
+    path_opt = argparse.ArgumentParser(add_help=False)
+    path_opt.add_argument(
+        "--path",
+        default=PANCAM_PATH,
+        metavar="DIR",
+        help="Root Pancam folder holding MERA/ and MERB/ (default: PANCAM_PATH in config.py).",
+    )
+    preview_opt = argparse.ArgumentParser(add_help=False)
+    preview_opt.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would change without writing anything.",
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="setup/util.py",
+        description="ROVR maintenance toolbox: scene import, R:\\ drive upkeep, migrations.",
+    )
+    sub = parser.add_subparsers(dest="command", metavar="command")
+
+    p = sub.add_parser("import", parents=[path_opt, preview_opt],
+                        help="Import scenes from a CSV observation table.")
+    p.add_argument("csv", nargs="?", metavar="CSV",
+                    help="CSV observation table. Omit to fall back to scanning "
+                        "<path> for IOF .IMG files, which populates far fewer columns.")
+    p.set_defaults(func=cmd_import)
+
+    p = sub.add_parser("wipe", help="Delete all scenes and reviews. Users are not affected.")
+    p.set_defaults(func=cmd_wipe)
+
+    p = sub.add_parser("backup", parents=[path_opt],
+                        help="Back up the database and both rovers' working/ trees (.fits and .sel).")
+    p.set_defaults(func=cmd_backup)
+
+    p = sub.add_parser("build-slides", parents=[path_opt, preview_opt],
+                        help="Build summary slides for scenes that reached a supervisor before slides existed.")
+    p.add_argument("--status", default="5,6,7", metavar="LIST",
+                    help="Comma-separated statuses to build for (default: 5,6,7 -- what a supervisor sees).")
+    p.add_argument("--force", action="store_true",
+                    help="Rebuild every slide, even ones already up to date.")
+    p.set_defaults(func=cmd_build_slides)
+
+    p = sub.add_parser("copy-approved", parents=[path_opt, preview_opt],
+                        help="Copy each approved scene's latest .fits into <path>/ready_for_asdf.")
+    p.set_defaults(func=cmd_copy_approved)
+
+    p = sub.add_parser("build-folders", parents=[path_opt],
+                        help="Ensure a subfolder exists under every rover/#### directory.")
+    p.add_argument("--subfolder", default=FolderKind.WORKING, metavar="NAME",
+                    help=f"Subfolder to create (default: {FolderKind.WORKING}).")
+    p.set_defaults(func=cmd_build_folders)
+
+    # One-off migrations, kept behind their own group so the routine commands
+    # above stay readable. All three are safe to re-run.
+    mig_parser = sub.add_parser("migrate", help="One-off R:\\ drive folder migrations.")
+    mig = mig_parser.add_subparsers(dest="migration", metavar="migration")
+    mig_parser.set_defaults(func=lambda _args, p=mig_parser: p.print_help())
+
+    p = mig.add_parser("restructure-folders", parents=[path_opt, preview_opt],
+                        help="Move rover/<kind>/solNNNN into rover/NNNN/<kind>.")
+    p.set_defaults(func=cmd_restructure_folders)
+
+    p = mig.add_parser("rename-folders", parents=[path_opt, preview_opt],
+                        help="Rename working/ ROI folders and their files to Sol####_p####v#_PMA#_<NAME>.")
+    p.set_defaults(func=cmd_rename_folders)
+
+    p = mig.add_parser("fix-panel-names", parents=[path_opt, preview_opt],
+                        help="Rename .png panels left behind by an earlier rename-folders run.")
+    p.set_defaults(func=cmd_fix_panel_names)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return
+    args.func(args)
 
 
 if __name__ == "__main__":
