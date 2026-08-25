@@ -92,6 +92,9 @@ _BODY_FS_MIN   = 11
 _GUTTER_CHARS  = 2
 _SWATCH_PX     = 26
 _SWATCH_GAP_PX = 8
+# The swatch and its gap come out of the ROI column's text budget, so the
+# column has to be widened by roughly their width or long names ellipsize.
+_SWATCH_CHARS  = 4
 
 # Distance is the one field ROVR abbreviates. Its three values are long enough
 # to set their column's width while carrying very little information, and its
@@ -200,7 +203,8 @@ def _column_chars(fields, rois):
     def longest(key):
         return max((len(_display_value(key, r.get(key))) for r in rois), default=0)
 
-    name_col = max(len("ROI"), max((len(str(r.get('name', ''))) for r in rois), default=0))
+    name_col = _SWATCH_CHARS + max(
+        len("ROI"), max((len(str(r.get('name', ''))) for r in rois), default=0))
     return [name_col] + [max(len(_header_label(key, label)), longest(key))
                         for key, label in fields]
 
