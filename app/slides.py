@@ -202,7 +202,7 @@ def _column_chars(fields, rois):
 
     name_col = max(len("ROI"), max((len(str(r.get('name', ''))) for r in rois), default=0))
     return [name_col] + [max(len(_header_label(key, label)), longest(key))
-                         for key, label in fields]
+                        for key, label in fields]
 
 
 def _column_layout(chars, width_px):

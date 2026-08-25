@@ -802,6 +802,216 @@ def backup_scenes(pancam_root, db_path):
     print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
 
 
+def audit_roi_names(conn, pancam_root):
+    """Report ROI colour names in use, and scenes with no findable folder.
+
+    A .fits carries either a current display name ('forest') or the older
+    MERSpect key it replaced ('green-2'). Both resolve; one that resolves to
+    nothing renders as a grey swatch with no warning.
+
+    A scene past submission with no folder is not automatically broken: one
+    with nothing to draw on never gets ROIs or a folder. Check its review notes.
+    """
+    from app.paths import find_scene_folder, kind_path, scene_file
+    from app.roi_metadata import roi_color, _UNKNOWN_COLOR
+    from app.fits_header import read_headers
+
+    scenes = conn.execute("SELECT * FROM scenes ORDER BY id").fetchall()
+    name_counts = {}
+    name_samples = {}
+    sel_without_fits = []
+    no_folder = []
+    scanned = 0
+
+    for i, scene in enumerate(scenes):
+        folder = find_scene_folder(pancam_root, scene)
+        if not folder:
+            no_folder.append(scene)
+            continue
+        fits = scene_file(folder, '.fits')
+        if scene_file(folder, '.sel') and not fits:
+            sel_without_fits.append((scene, folder))
+        if not fits:
+            continue
+        try:
+            headers = read_headers(fits)
+        except (OSError, ValueError) as e:
+            print(f"  unreadable: id={scene['id']} {scene['name']}: {e}")
+            continue
+        scanned += 1
+        for h in headers:
+            name = str(h.get('NAME') or '').strip()
+            if not name:
+                continue
+            name_counts[name] = name_counts.get(name, 0) + 1
+            name_samples.setdefault(name, [])
+            if len(name_samples[name]) < 5:
+                name_samples[name].append(scene['id'])
+        if (i + 1) % 100 == 0:
+            print(f"  {i + 1}/{len(scenes)} scenes, {scanned} .fits read", flush=True)
+
+    print(f"\nscenes {len(scenes)}, .fits read {scanned}, "
+          f"distinct ROI names {len(name_counts)}")
+    print(f".sel with no .fits: {len(sel_without_fits)} (should be 0)")
+
+    print(f"\n{'name':<20} {'count':>7}  {'colour':<12} sample scene ids")
+    for name, count in sorted(name_counts.items(), key=lambda kv: -kv[1]):
+        verdict = 'UNRESOLVED' if roi_color(name) == _UNKNOWN_COLOR else 'ok'
+        ids = ','.join(str(i) for i in name_samples[name])
+        print(f"{name:<20} {count:>7}  {verdict:<12} {ids}")
+
+    for scene, folder in sel_without_fits:
+        print(f"  .sel only: id={scene['id']} {scene['name']} in {folder}")
+
+    # Only scenes past submission are broken; the rest simply aren't drawn yet.
+    submitted = [s for s in no_folder
+                 if s['status'] not in (SceneStatus.UNCLAIMED, SceneStatus.CLAIMED,
+                                        SceneStatus.ISSUES)]
+    print(f"\nno findable folder: {len(no_folder)} scene(s), "
+          f"{len(submitted)} of them past submission")
+    for s in submitted:
+        working = kind_path(pancam_root, s['rover'], s['sol'], FolderKind.WORKING)
+        seq = (s['seq_id'] or '').lower()
+        ver = f"v{s['seq_ver']}" if s['seq_ver'] is not None else ''
+        print(f"  id={s['id']} status={s['status']} {s['name']}")
+        print(f"    expected Sol{s['sol']:04d}_{seq}{ver}_PMA{s['pma']}* in {working}")
+
+
+# Mirrors ROI Studio's _save_annotated() styling. Close, not identical.
+_LABEL_DPI     = 150
+_LABEL_FIG_IN  = (12, 9)
+_LABEL_FS      = 8
+_LABEL_PAD     = 0.2
+_LABEL_BOX     = (20 / 255, 20 / 255, 20 / 255)
+_LABEL_ALPHA   = 200 / 255
+_LABEL_EDGE_W  = 1.5
+
+
+def _roi_mask_boxes(fits_path, eye):
+    """[(name, (x, y, w, h)), ...] and (w, h) of the mask, for one eye.
+
+    One union-mask HDU per ROI per eye, so a box is that mask's non-zero
+    bounding box. Two blobs give one box spanning both."""
+    import numpy as np
+    from app.fits_header import iter_hdus
+
+    boxes, dims = [], None
+    for header, data in iter_hdus(fits_path):
+        name = str(header.get('NAME') or '').strip()
+        if not name or str(header.get('EYE', '')).strip().lower() != eye:
+            continue
+        w, h = header.get('NAXIS1'), header.get('NAXIS2')
+        if not (isinstance(w, int) and isinstance(h, int)):
+            continue
+        if abs(header.get('BITPIX', 8)) != 8 or len(data) < w * h:
+            continue
+        mask = np.frombuffer(data[:w * h], dtype=np.uint8).reshape(h, w)
+        rows = np.flatnonzero(mask.any(axis=1))
+        cols = np.flatnonzero(mask.any(axis=0))
+        if not rows.size or not cols.size:
+            continue
+        boxes.append((name, (int(cols[0]), int(rows[0]),
+                             int(cols[-1] - cols[0]) + 1, int(rows[-1] - rows[0]) + 1)))
+        dims = (w, h)
+    return boxes, dims
+
+
+def _panel_box(box, factor):
+    """A mask-space box in panel pixels. Mask rows run top-down like the
+    panel, so the two differ only by a uniform scale."""
+    x, y, w, h = box
+    return (x * factor, y * factor, w * factor, h * factor)
+
+
+def label_scene_panel(folder, fits_path, suffix, eye):
+    """Write the ROI-labelled twin of one panel. Returns its path, or None.
+
+    None means no panel or no masks for that eye, which is a skip, not a
+    failure: not every observation captured both eyes."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.image as mpimg
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from app.paths import find_panel
+    from app.roi_metadata import roi_color
+
+    panel = find_panel(folder, suffix)
+    if not panel:
+        return None
+    boxes, dims = _roi_mask_boxes(fits_path, eye)
+    if not boxes or not dims:
+        return None
+
+    img = mpimg.imread(panel)
+    if img.dtype != np.uint8:
+        img = (img * 255).astype(np.uint8)
+    factor = img.shape[1] / dims[0]
+    fig, ax = plt.subplots(figsize=_LABEL_FIG_IN, dpi=_LABEL_DPI)
+    fig.patch.set_facecolor('black')
+    ax.set_facecolor('black')
+    ax.imshow(img)
+    ax.axis('off')
+    for name, box in boxes:
+        x, y, w, h = _panel_box(box, factor)
+        color = roi_color(name)
+        ax.add_patch(mpatches.Rectangle((x, y), w, h, linewidth=_LABEL_EDGE_W,
+                                        edgecolor=color, facecolor='none'))
+        pad_pts = _LABEL_FS * _LABEL_PAD
+        ax.annotate(name, xy=(x, y), xytext=(pad_pts, pad_pts),
+                    textcoords='offset points', color=color, fontfamily='Arial',
+                    fontsize=_LABEL_FS, horizontalalignment='left',
+                    verticalalignment='bottom', clip_on=False, annotation_clip=False,
+                    bbox={'boxstyle': f'square,pad={_LABEL_PAD}',
+                          'facecolor': _LABEL_BOX, 'edgecolor': 'none',
+                          'alpha': _LABEL_ALPHA})
+
+    out = os.path.splitext(panel)[0] + '_with_roi_names.png'
+    fig.savefig(out, bbox_inches='tight', pad_inches=0, dpi=_LABEL_DPI)
+    plt.close(fig)
+    return out
+
+
+def label_panels(conn, pancam_root, scene=None):
+    """Backfill the ROI-labelled RGB panel for saves made before ROI Studio
+    started writing one. Right eye only, matching the summary slide.
+
+    Safe to re-run and interrupt: a scene that already has one is skipped."""
+    from app.paths import Panel, find_scene_folder, find_panel, scene_file
+
+    rows = conn.execute("SELECT * FROM scenes ORDER BY id").fetchall()
+    if scene:
+        rows = [r for r in rows
+                if str(r['id']) == str(scene) or r['name'] == scene]
+        if not rows:
+            _fail(f"no scene matching '{scene}'.")
+
+    written = skipped = no_folder = 0
+
+    for s in rows:
+        folder = find_scene_folder(pancam_root, s)
+        if not folder:
+            no_folder += 1
+            continue
+        fits = scene_file(folder, '.fits')
+        if not fits:
+            no_folder += 1
+            continue
+        if find_panel(folder, Panel.RIGHT_RGB_NAMED):
+            skipped += 1
+            continue
+        out = label_scene_panel(folder, fits, Panel.RIGHT_RGB, 'right')
+        if out is None:
+            skipped += 1
+            continue
+        written += 1
+        print(f"  {s['name']}: {out}", flush=True)
+
+    print(f"\n{written} labelled, {skipped} already had one or nothing to do, "
+            f"{no_folder} without a folder or .fits")
+
+
 def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False):
     """Build summary slides for every scene in the given statuses.
 
@@ -987,6 +1197,18 @@ def cmd_backup(args):
     backup_scenes(root, DB_PATH)
 
 
+def cmd_audit_roi_names(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        audit_roi_names(conn, root)
+
+
+def cmd_label_panels(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        label_panels(conn, root, scene=args.scene)
+
+
 def cmd_build_slides(args):
     root = _pancam_root(args)
     statuses = _statuses(args.status)
@@ -1056,6 +1278,16 @@ def build_parser():
     p = sub.add_parser("backup", parents=[path_opt],
                         help="Back up the database and both rovers' working/ trees (.fits and .sel).")
     p.set_defaults(func=cmd_backup)
+
+    p = sub.add_parser("audit-roi-names", parents=[path_opt],
+                        help="Report ROI colour names in use and scenes with no findable folder.")
+    p.set_defaults(func=cmd_audit_roi_names)
+
+    p = sub.add_parser("label-panels", parents=[path_opt],
+                        help="Backfill the ROI-labelled right-eye RGB panel for older saves.")
+    p.add_argument("--scene", metavar="ID_OR_NAME",
+                    help="Only this scene, by id or name. Omit to do the whole archive.")
+    p.set_defaults(func=cmd_label_panels)
 
     p = sub.add_parser("build-slides", parents=[path_opt, preview_opt],
                         help="Build summary slides for scenes that reached a supervisor before slides existed.")

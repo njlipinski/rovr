@@ -41,6 +41,10 @@ _FALLBACK_FIELDS = (
     ('DESCRIPTION',     'Description'),
 )
 
+# The table's columns, after the ROI name column the slide draws itself. Closed
+# list: these and nothing else, drawn whether or not any ROI fills them.
+TABLE_COLUMNS = ('FEATURE', 'FEATURE_SUBTYPE', 'DISTANCE')
+
 # Fields drawn on a line under their row rather than in a table column, in the
 # order they read on that line. Description is far longer than any other field
 # and left in the grid it sets the column widths for the whole table. Float and
@@ -187,26 +191,19 @@ def read_scene_rois(fits_path):
 
 
 def present_fields(rois, schema=None):
-    """Return the [(key, label), ...] worth putting in the table: schema order
-    first, then any field ROI Studio wrote that the schema doesn't mention, and
-    nothing that is blank for every ROI."""
+    """Return the [(key, label), ...] the table draws: the fixed columns, then
+    whichever continuation fields any ROI fills.
+
+    Columns are fixed, not discovered: provenance cards share the header with
+    the analyst's answers, and discovering columns picked those up too. Labels
+    still come from the schema."""
     schema = schema if schema is not None else load_field_schema()
-    known = [k for k, _ in schema]
-    extra = sorted({
-        k for roi in rois for k in roi
-        if k not in known and k not in ('name', _ROI_NAME_KEY, _ROI_EYE_KEY)
-        and k not in _NON_METADATA_KEYS
-    })
-    ordered = list(schema) + [(k, _pretty_label(k)) for k in extra]
-    return [(k, label) for k, label in ordered
-            if any(str(roi.get(k, '')).strip() for roi in rois)]
+    labels = dict(schema)
 
+    def labelled(key):
+        return key, labels.get(key) or _pretty_label(key)
 
-# Cards ROI Studio writes for provenance or scene identity rather than as
-# analyst-assigned ROI metadata; they would only clutter the table.
-_NON_METADATA_KEYS = frozenset({
-    'SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'EXTEND', 'XTENSION',
-    'PCOUNT', 'GCOUNT', 'EXTNAME', 'SOURCEFN', 'IMAGEREF', 'SCENE_ID',
-    'INSTRUMENT', 'ROVER', 'SOL', 'SEQ_ID', 'SEQ_VER', 'SITE', 'DRIVE',
-    'PMA', 'SOLAR_ELEVATION',
-})
+    return [labelled(k) for k in TABLE_COLUMNS] + [
+        labelled(k) for k in CONTINUATION_FIELDS
+        if any(str(roi.get(k, '')).strip() for roi in rois)
+    ]

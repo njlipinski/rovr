@@ -128,6 +128,37 @@ def _data_size(header):
     return ((size + BLOCK - 1) // BLOCK) * BLOCK
 
 
+def iter_hdus(path, max_hdus=256):
+    """Yield (header, data_bytes) per HDU, pixel data included.
+
+    Costs the whole file, unlike read_headers. The walk is duplicated rather
+    than shared to leave read_headers untouched."""
+    seen = 0
+    with open(path, 'rb') as f:
+        first = f.read(BLOCK)
+        if not first.startswith(b'SIMPLE'):
+            raise ValueError(f"{os.path.basename(path)} is not a FITS file")
+        f.seek(0)
+        while seen < max_hdus:
+            start = f.tell()
+            chunk = f.read(BLOCK)
+            if len(chunk) < BLOCK:
+                break
+            # A header can span several blocks; keep reading until END.
+            text = chunk.decode('ascii', errors='replace')
+            header, consumed = parse_header_block(text)
+            while consumed >= len(text) and 'END' not in text[-BLOCK:]:
+                more = f.read(BLOCK)
+                if len(more) < BLOCK:
+                    break
+                text += more.decode('ascii', errors='replace')
+                header, consumed = parse_header_block(text)
+            size = _data_size(header)
+            seen += 1
+            f.seek(start + consumed)
+            yield header, f.read(size)
+
+
 def read_headers(path, max_hdus=256):
     """Return a list of header dicts, one per HDU, without reading pixel data.
 
