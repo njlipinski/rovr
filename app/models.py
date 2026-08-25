@@ -36,12 +36,13 @@ class SceneStatus:
 
 
 class SceneFlag:
-    OTHER       = 0
-    BAD_SCENE   = 1
-    BAD_FILTERS = 2
+    OTHER           = 0
+    BAD_SCENE       = 1
+    BAD_FILTERS     = 2
+    DATA_DROPOUT    = 3
 
-    LABELS = {0: "Other", 1: "Bad scene", 2: "Missing filters"}
-    COLORS = {0: "#4A90D9", 1: "#E05A5A", 2: "#F5A623"}
+    LABELS = {0: "Other", 1: "Bad scene", 2: "Missing filters", 3: "Data dropout"}
+    COLORS = {0: "#4A90D9", 1: "#E05A5A", 2: "#F5A623", 3: "#FEE12B"}
 
     @staticmethod
     def parse(s):

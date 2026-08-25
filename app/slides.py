@@ -31,14 +31,8 @@ from app.roi_metadata import (
     CONTINUATION_FIELDS, load_field_schema, present_fields, read_scene_rois, roi_color,
 )
 
-# Panels, in the 2x2 order they are laid out. The left DCS / right RGB pairing
-# is deliberate and not symmetric: the DCS carries the ROI boxes that key to
-# the spectra curves, and the opposite eye's RGB gives true-colour context.
-# The metadata cell has no source image (suffix None).
-#
-# The RGB cell prefers the ROI-labelled image and falls back to the plain one,
-# since only recent saves have the labelled version. The DCS cell has no
-# labelled counterpart yet; give it the same treatment when one exists.
+# Panels, in the 2x2 order they are laid out.
+
 _LAYOUT = (
     (Panel.LEFT_DCS,                            "Left eye DCS"),
     ((Panel.RIGHT_RGB_NAMED, Panel.RIGHT_RGB),  "Right eye RGB"),
@@ -46,12 +40,9 @@ _LAYOUT = (
     (None,                                      "ROI metadata"),
 )
 
-# Cell size matches ROI Studio's native DCS/RGB output, so the two panels that
-# dominate the slide are composited without any resampling at all.
+# Cell size matches ROI Studio's native DCS/RGB output.
 CELL_PX    = 1039
 DPI        = 100
-# Margins and gaps are hairlines: the page is over 2000px on a side, and every
-# pixel spent on white space is a pixel not spent on the panels or the table.
 MARGIN_PX  = 8
 GAP_PX     = 8
 TITLE_PX   = 52
@@ -66,10 +57,7 @@ _SUB_C     = '#555555'
 _CAPTION_C = '#444444'
 _MUTED_C   = '#999999'
 _RULE_C    = '#dddddd'
-
-# Type sizes are in points against a 100 DPI page more than 20 inches wide, so
-# they read far smaller than the same number would on a letter page. These are
-# sized for a slide viewed fit-to-width on a monitor.
+# These are sized for a slide viewed fit-to-width on a monitor.
 _TITLE_FS       = 30
 _SUB_FS         = 17
 _CAPTION_FS     = 17
@@ -77,11 +65,8 @@ _PLACEHOLDER_FS = 24
 
 # Row geometry for the metadata table, in pixels within its cell.
 #
-# The palette has 15 colors, so a scene cannot hold more than 15 ROIs, and the
-# body type is sized so exactly that many rows fit a cell. That fixes the type
-# size for every slide rather than letting it drift with ROI count. A table with
-# fewer rows spreads them out (up to _ROW_STRETCH times the base height) instead
-# of growing the text, so the bottom of the cell is not left empty.
+# The palette has 15 colors, so no more than 15 ROIs should exist.
+
 _TABLE_HEAD_PX = 46
 _ROWS_PER_CELL = 15
 _ROW_STRETCH   = 2.0
@@ -95,12 +80,6 @@ _SWATCH_GAP_PX = 8
 # The swatch and its gap come out of the ROI column's text budget, so the
 # column has to be widened by roughly their width or long names ellipsize.
 _SWATCH_CHARS  = 4
-
-# Distance is the one field ROVR abbreviates. Its three values are long enough
-# to set their column's width while carrying very little information, and its
-# heading is wider than the abbreviations, so that is shortened too. An
-# unrecognized value prints as written: this is a display shortcut, not a
-# vocabulary ROVR enforces.
 _DISTANCE_KEY     = 'DISTANCE'
 _DISTANCE_ABBREV  = {'nearfield': 'NF', 'midfield': 'MF', 'farfield': 'FF'}
 _HEADER_OVERRIDES = {_DISTANCE_KEY: 'Dist'}
