@@ -1012,7 +1012,7 @@ def label_panels(conn, pancam_root, scene=None):
             f"{no_folder} without a folder or .fits")
 
 
-def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False):
+def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False, skip=0):
     """Build summary slides for every scene in the given statuses.
 
     Backfill for scenes that reached a supervisor before slides existed. Going
@@ -1024,6 +1024,10 @@ def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False
     where the last one stopped. A scene with an incomplete folder is reported
     and the run continues -- collecting those into one list at the end is the
     point, since they need a human to re-save them.
+
+    `skip` drops the first N scenes, for resuming a --force run where the
+    up-to-date check cannot do it. Ordering is fixed, but only for the same
+    set of statuses.
     """
     from app.paths import find_scene_folder, scene_file
     from app.slides import build_summary_slide, missing_panels, slide_is_current
@@ -1036,12 +1040,16 @@ def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False
 
     total = len(scenes)
     labels = ', '.join(SceneStatus.LABELS.get(s, str(s)) for s in sorted(statuses))
-    print(f"{total} scene(s) in status: {labels}\n")
+    print(f"{total} scene(s) in status: {labels}")
+    if skip:
+        scenes = scenes[skip:]
+        print(f"skipping the first {skip}, resuming at {skip + 1}")
+    print()
 
     built = skipped = 0
     problems = []
     gapped = []
-    for i, scene in enumerate(scenes, 1):
+    for i, scene in enumerate(scenes, skip + 1):
         prefix = f"[{i}/{total}  {i / total * 100:5.1f}%]  {scene['name']}"
         try:
             if not force and slide_is_current(pancam_root, scene):
@@ -1213,7 +1221,8 @@ def cmd_build_slides(args):
     root = _pancam_root(args)
     statuses = _statuses(args.status)
     with _db() as conn:
-        build_summary_slides(conn, root, statuses, dry_run=args.dry_run, force=args.force)
+        build_summary_slides(conn, root, statuses, dry_run=args.dry_run,
+                             force=args.force, skip=args.skip)
 
 
 def cmd_copy_approved(args):
@@ -1295,6 +1304,8 @@ def build_parser():
                     help="Comma-separated statuses to build for (default: 5,6,7 -- what a supervisor sees).")
     p.add_argument("--force", action="store_true",
                     help="Rebuild every slide, even ones already up to date.")
+    p.add_argument("--skip", type=int, default=0, metavar="N",
+                    help="Skip the first N scenes, to resume an interrupted run.")
     p.set_defaults(func=cmd_build_slides)
 
     p = sub.add_parser("copy-approved", parents=[path_opt, preview_opt],
