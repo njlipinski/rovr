@@ -81,7 +81,7 @@ _SWATCH_GAP_PX = 8
 # column has to be widened by roughly their width or long names ellipsize.
 _SWATCH_CHARS  = 4
 _DISTANCE_KEY     = 'DISTANCE'
-_DISTANCE_ABBREV  = {'nearfield': 'NF', 'midfield': 'MF', 'farfield': 'FF'}
+_DISTANCE_ABBREV  = {'nearfield': 'near', 'midfield': 'mid', 'farfield': 'far'}
 _HEADER_OVERRIDES = {_DISTANCE_KEY: 'Dist'}
 
 
@@ -136,10 +136,7 @@ def _cell_axes(fig, x, y, w=CELL_PX, h=CELL_PX):
 
 
 def _draw_image(fig, image_path, x, y):
-    """Place an image at native size, centred in its cell. Never enlarged, so a
-    panel smaller than the cell (the spectra plot is) keeps its own pixels
-    rather than being interpolated up, and never cropped, so an unexpectedly
-    large panel is scaled down whole."""
+    """Place an image at native size, centred in its cell."""
     img = mpimg.imread(image_path)
     img_h, img_w = img.shape[0], img.shape[1]
     scale = min(1.0, CELL_PX / img_w, CELL_PX / img_h)
