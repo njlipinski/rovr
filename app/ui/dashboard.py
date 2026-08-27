@@ -32,6 +32,7 @@ from app.local_settings import (
     get_ui_scale, set_ui_scale,
     get_dialog_size, set_dialog_size,
     get_splitter_sizes, set_splitter_sizes,
+    get_note_height, set_note_height,
     set_scene_viewed_at,
 )
 from app.ui.styles import DARK_STYLESHEET, TRAY_HEIGHT, MIN_COL_WIDTH, apply_theme, color_button
@@ -69,9 +70,53 @@ def parse_scene_key(scene_key):
 class WordSelectTextEdit(QTextEdit):
     """QTextEdit where double-click selects a whole word, treating apostrophes
     as part of the word (so "don't" or "can't" select as one unit instead of
-    stopping at the punctuation, which is Qt's default)."""
+    stopping at the punctuation, which is Qt's default).
+
+    Its bottom edge is a drag grip, so any box built on it can be made taller
+    for a long note. Every text box in the app is one of these. Pass
+    height_key to remember the dragged height across restarts."""
 
     _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+    _GRIP_PX = 6    # band at the bottom edge that starts a resize drag
+    _MIN_HEIGHT = 40
+
+    def __init__(self, height_key=None, height=72, parent=None):
+        super().__init__(parent)
+        self._height_key = height_key
+        self._drag_from = None
+        self.viewport().setMouseTracking(True)
+        self.setFixedHeight((height_key and get_note_height(height_key)) or height)
+
+    def _in_grip(self, pos):
+        return pos.y() >= self.viewport().height() - self._GRIP_PX
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._in_grip(event.pos()):
+            self._drag_from = (event.globalPosition().toPoint().y(), self.height())
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_from is not None:
+            start_y, start_h = self._drag_from
+            delta = event.globalPosition().toPoint().y() - start_y
+            self.setFixedHeight(max(self._MIN_HEIGHT, start_h + delta))
+            return
+        self.viewport().setCursor(Qt.CursorShape.SizeVerCursor if self._in_grip(event.pos())
+                                    else Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_from is not None:
+            self._drag_from = None
+            if self._height_key:
+                set_note_height(self._height_key, self.height())
+            return
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        super().leaveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # Call super() first: besides doing Qt's default word selection (which we
@@ -461,8 +506,7 @@ class FlagDialog(SizePersistentDialog):
             self._checks[flag_id] = cb
 
         layout.addWidget(QLabel("Note:"))
-        self._note = WordSelectTextEdit()
-        self._note.setFixedHeight(72)
+        self._note = WordSelectTextEdit(height_key='flags')
         self._note.setPlaceholderText("Optional additional context...")
         layout.addWidget(self._note)
 
@@ -648,8 +692,7 @@ class NotesDialog(SizePersistentDialog):
         layout.addWidget(edit_row)
 
         layout.addWidget(QLabel("Add a note:"))
-        self.input = WordSelectTextEdit()
-        self.input.setFixedHeight(80)
+        self.input = WordSelectTextEdit(height_key='notes', height=80)
         self.input.setPlaceholderText("Type a note...")
         layout.addWidget(self.input)
 

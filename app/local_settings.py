@@ -108,6 +108,17 @@ def set_dialog_size(key, width, height):
     _save(data)
 
 
+def get_note_height(key):
+    """Height a user dragged a note box to, or None if they never have."""
+    return _load().get('note_heights', {}).get(key)
+
+
+def set_note_height(key, height):
+    data = _load()
+    data.setdefault('note_heights', {})[key] = int(height)
+    _save(data)
+
+
 def get_last_login(username):
     """UTC 'YYYY-MM-DD HH:MM:SS' of this user's previous login on this machine,
     or '' if they have never logged in here."""

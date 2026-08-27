@@ -83,8 +83,7 @@ class EditSceneDialog(SizePersistentDialog):
         layout.addWidget(self.claimed_combo)
 
         layout.addWidget(QLabel("Notes (optional):"))
-        self.notes = WordSelectTextEdit()
-        self.notes.setFixedHeight(72)
+        self.notes = WordSelectTextEdit(height_key='edit_scene')
         layout.addWidget(self.notes)
 
         buttons = QDialogButtonBox(
