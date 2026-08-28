@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.auth import authenticate_user
+from app.db import ConnectionLost
 from app.local_settings import get_last_login, set_last_login
 from app.models import Role
 
@@ -68,6 +69,12 @@ class LoginUI(QWidget):
         # database on it used to reach the crash dialog.
         try:
             user = authenticate_user(self.conn, username, password)
+        except ConnectionLost as e:
+            # Imported here, like the dashboards below: pulling dashboard.py in
+            # at module level would drag its slide/plotting imports into launch.
+            from app.ui.dashboard import connection_lost_message
+            QMessageBox.warning(self, *connection_lost_message(e))
+            return
         except sqlite3.OperationalError as e:
             if 'locked' not in str(e).lower():
                 raise

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from app.ui.dashboard import (
-    Dashboard, WordSelectTextEdit, SizePersistentDialog, SCENE_BUTTONS,
+    Dashboard, WordSelectTextEdit, NoteResizeGrip, SizePersistentDialog, SCENE_BUTTONS,
     PersistentSplitter,
     make_scene_table, make_section,
     parse_scene_key, apply_flag_delegate, make_flag_item, local_ts,
@@ -82,8 +82,9 @@ class EditSceneDialog(SizePersistentDialog):
         self.claimed_combo = _make_user_combo(conn, {Role.ANALYST, Role.SUPERVISOR}, scene['claimed_by'])
         layout.addWidget(self.claimed_combo)
 
-        layout.addWidget(QLabel("Notes (optional):"))
         self.notes = WordSelectTextEdit(height_key='edit_scene')
+        layout.addWidget(NoteResizeGrip(self.notes))
+        layout.addWidget(QLabel("Notes (optional):"))
         layout.addWidget(self.notes)
 
         buttons = QDialogButtonBox(
@@ -290,6 +291,8 @@ class SupervisorDashboard(Dashboard):
                     )
                 elif field == 'flags':
                     item = make_flag_item(scene['flags'])
+                elif field == 'updated_at':
+                    item = QTableWidgetItem(str(local_ts(scene[field]) or '—'))
                 else:
                     item = QTableWidgetItem(str(scene[field] or '—'))
                 self.master_table.setItem(i, col, item)

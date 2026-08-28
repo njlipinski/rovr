@@ -17,62 +17,132 @@ _RETRY_DELAY = 0.1
 _WRITE_RETRIES = 25
 _READ_RETRIES = 5
 
+# Failures are timed, not counted, before we suspect the drive rather than a
+# peer: a blocked commit returns immediately (see _with_lock_retry) so 25
+# attempts take a few seconds, while a blocked first statement waits out the 1s
+# busy timeout each time and the same 25 attempts take half a minute.
+_PROBE_AFTER = 2.0
 
-def _retry_on_lock(fn, retries, delay, on_error=None):
+# Reads page 1 of the file under a shared lock, so it touches the drive rather
+# than answering from cache. sqlite_master, not sqlite_schema: the newer name
+# needs SQLite 3.33+.
+_PROBE_SQL = "SELECT count(*) FROM sqlite_master"
+
+# Idle SMB sessions are dropped after roughly 15 minutes, so touch the file
+# well inside that.
+KEEPALIVE_SECONDS = 300
+
+
+class ConnectionLost(sqlite3.OperationalError):
+    """The database file could not be reached, or was reached only after the
+    connection had to be reopened.
+
+    Subclasses OperationalError so existing handlers still catch it.
+    `restored` is True when the connection has already been repaired and the
+    action just needs running again.
+    """
+
+    def __init__(self, message, restored=False):
+        super().__init__(message)
+        self.restored = restored
+
+
+def _probe(conn):
+    """Tell a dead handle apart from a genuinely busy database.
+
+    Returns a replacement connection when the handle is stale, None when the
+    database is only busy, and raises ConnectionLost when the drive is gone.
+    """
+    try:
+        conn.execute(_PROBE_SQL).fetchone()
+        return None
+    except sqlite3.Error:
+        pass
+    fresh = None
+    try:
+        fresh = _connect()
+        fresh.execute(_PROBE_SQL).fetchone()
+        return fresh
+    except sqlite3.Error as e:
+        if fresh is not None:
+            try:
+                fresh.close()
+            except sqlite3.Error:
+                pass
+        if isinstance(e, sqlite3.OperationalError) and 'locked' in str(e).lower():
+            return None
+        raise ConnectionLost(str(e)) from e
+
+
+def _retry_on_lock(conn, fn, retries, delay, on_error=None, retry_after_reconnect=True):
     """Run fn(), retrying while SQLite reports the database is locked.
 
     DB_PATH lives on a shared network drive, so a second user's
     near-simultaneous write is expected to occasionally collide -- it should
     resolve within a second or two once their transaction commits.
 
+    A dropped network session is the other failure mode, and it never clears on
+    its own. Once failures have outlasted _PROBE_AFTER, _probe() decides
+    which one this is. A stale handle is replaced in place and the caller's
+    holders never notice. An unreachable drive raises ConnectionLost so the UI
+    can say so instead of blaming contention.
+
     Callers use the two wrappers below rather than calling this directly.
     """
-    for attempt in range(retries):
+    started = time.monotonic()
+    attempt = 0
+    probed = False
+    while True:
         try:
             return fn()
         except sqlite3.OperationalError as e:
             if on_error is not None:
-                on_error()
-            if 'locked' not in str(e).lower() or attempt == retries - 1:
+                try:
+                    on_error()
+                except sqlite3.Error:
+                    pass  # a dead handle cannot roll back, and must not mask e
+            locked = 'locked' in str(e).lower()
+            attempt += 1
+            last = attempt >= retries
+            if (not probed and isinstance(conn, _ReconnectingConnection)
+                    and (not locked or last or time.monotonic() - started >= _PROBE_AFTER)):
+                probed = True
+                fresh = _probe(conn)
+                if fresh is not None:
+                    conn._swap(fresh)
+                    if not retry_after_reconnect:
+                        # Writes are never re-run across a reconnect: a commit
+                        # whose acknowledgement was lost would be applied twice,
+                        # duplicating the reviews row. The user reruns it.
+                        raise ConnectionLost(str(e), restored=True) from e
+                    continue
+            if not locked or last:
                 raise
             time.sleep(delay)
-    raise ValueError("retries must be >= 1")
 
 
 def _with_lock_retry(conn, fn, retries=_WRITE_RETRIES, delay=_RETRY_DELAY):
     """Run fn() (a DB write) with retries, rolling back between attempts.
 
     Every write in this module goes through here so that a lock never
-    surfaces as a crash.
-
-    The rollback is load-bearing. Python's sqlite3 opens a transaction
-    implicitly before the first write and holds it until commit or rollback,
-    and commit is the statement that usually fails here. SQLite skips its
-    busy handler when a connection has to upgrade a lock it already holds, so
-    a blocked commit returns immediately rather than waiting out the timeout.
-    fn()'s statements are therefore still pending when this runs. Without the
-    rollback the next attempt appends a second copy of them to that same open
-    transaction, and whichever attempt finally commits writes every copy. Rolling
-    back on the final failure matters too: it releases the write lock, which
-    would otherwise be held for the rest of the session once the UI catches
-    the error and carries on.
-    """
-    return _retry_on_lock(fn, retries, delay, on_error=conn.rollback)
+    surfaces as a crash."""
+    return _retry_on_lock(conn, fn, retries, delay, on_error=conn.rollback,
+                            retry_after_reconnect=False)
 
 
-def _with_read_retry(fn, retries=_READ_RETRIES, delay=_RETRY_DELAY):
+def _with_read_retry(conn, fn, retries=_READ_RETRIES, delay=_RETRY_DELAY):
     """Run fn() (a DB read) with retries. Use _read_one/_read_all instead."""
-    return _retry_on_lock(fn, retries, delay)
+    return _retry_on_lock(conn, fn, retries, delay)
 
 
 def _read_one(conn, sql, params=()):
     """Single-row read, retried while the database is locked."""
-    return _with_read_retry(lambda: conn.execute(sql, params).fetchone())
+    return _with_read_retry(conn, lambda: conn.execute(sql, params).fetchone())
 
 
 def _read_all(conn, sql, params=()):
     """Multi-row read, retried while the database is locked."""
-    return _with_read_retry(lambda: conn.execute(sql, params).fetchall())
+    return _with_read_retry(conn, lambda: conn.execute(sql, params).fetchall())
 
 
 def _read_scalar(conn, sql, params=(), default=0):
@@ -853,14 +923,79 @@ def _run_migrations(conn):
             conn.commit()
 
 
-def get_db_connection():
+def _connect():
+    """Open a raw connection with ROVR's required settings. Reconnecting goes
+    through here too, so a replacement handle is configured identically."""
     # timeout=1.0 sets SQLite's own busy handler, so every statement already
-    # retries internally for up to 1s before raising "database is locked" 
+    # retries internally for up to 1s before raising "database is locked"
     conn = sqlite3.connect(DB_PATH, timeout=1.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
+
+
+class _ReconnectingConnection:
+    """Holds the real sqlite3 handle so it can be replaced underneath the app.
+
+    One connection is opened at startup and handed to the login window, both
+    dashboards and every dialog, and it survives logout. A dropped network
+    session kills that handle but none of those references, so the handle is
+    swapped in place instead and nobody has to be told.
+    """
+
+    def __init__(self):
+        self._inner = _connect()
+
+    # Explicit rather than left to __getattr__, so each call re-resolves
+    # _inner. A bound method captured before a swap would keep talking to the
+    # dead handle, and _with_lock_retry passes conn.rollback around as exactly
+    # that.
+    def execute(self, *args):
+        return self._inner.execute(*args)
+
+    def commit(self):
+        return self._inner.commit()
+
+    def rollback(self):
+        return self._inner.rollback()
+
+    def cursor(self, *args):
+        return self._inner.cursor(*args)
+
+    def close(self):
+        self._inner.close()
+
+    def __getattr__(self, name):
+        if name == '_inner':  # only before __init__ finishes; else infinite recursion
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+    def _swap(self, fresh):
+        """Install a fresh handle, discarding the old one best-effort. The
+        rollback and close release whatever locks it still holds if it is only
+        half dead."""
+        old, self._inner = self._inner, fresh
+        for op in (old.rollback, old.close):
+            try:
+                op()
+            except sqlite3.Error:
+                pass
+
+
+def get_db_connection():
+    return _ReconnectingConnection()
+
+
+def keepalive(conn):
+    """Ping the database so an idle network session is not dropped, replacing
+    the handle if it has already died. Runs on a timer. Returns False if the 
+    drive is unreachable."""
+    try:
+        _with_read_retry(conn, lambda: conn.execute(_PROBE_SQL).fetchone(), retries=1)
+        return True
+    except sqlite3.Error:
+        return False
 
 def initialize_db():
     conn = get_db_connection()

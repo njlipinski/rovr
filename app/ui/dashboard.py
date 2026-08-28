@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter, QMenu, QGroupBox,
     QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QFileDialog, QLineEdit,
     QCheckBox, QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QInputDialog,
+    QFrame,
     QApplication, QTabWidget, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QSize, QUrl, QTimer
@@ -46,7 +47,7 @@ from app.db import (
     get_science_notes, add_science_note, update_science_note, delete_science_note,
     update_username, update_user_password, get_user_by_username,
     update_scene_flags, get_user_stats, get_all_user_stats, get_all_supervisor_stats,
-    get_supervisor_analyst_coverage, get_owned_activity_since,
+    get_supervisor_analyst_coverage, get_owned_activity_since, ConnectionLost,
 )
 from app.auth import verify_password, hash_password
 from config import PANCAM_PATH
@@ -57,6 +58,18 @@ except ImportError:
 
 # Parses 'MERB/sol0003/P2350/obs0' -> ('MERB', '0003', 'P2350', '0')
 _KEY_RE = re.compile(r'^(MER[AB])/sol(\d{4})/([^/]+)/obs(\d+)$')
+
+
+def connection_lost_message(exc):
+    """(title, text) for a ConnectionLost, told apart by whether the connection
+    came back. Neither case needs a restart, which is what users do now."""
+    if exc.restored:
+        return ("Connection Restored",
+                f"The connection to {PANCAM_PATH} dropped and has been restored. "
+                "Please try that again.")
+    return ("Network Drive Unavailable",
+            f"ROVR cannot reach {PANCAM_PATH}. Check your network or VPN connection "
+            "and try again. You do not need to restart ROVR.")
 
 
 def parse_scene_key(scene_key):
@@ -72,51 +85,25 @@ class WordSelectTextEdit(QTextEdit):
     as part of the word (so "don't" or "can't" select as one unit instead of
     stopping at the punctuation, which is Qt's default).
 
-    Its bottom edge is a drag grip, so any box built on it can be made taller
-    for a long note. Every text box in the app is one of these. Pass
-    height_key to remember the dragged height across restarts."""
+    Pair it with a NoteResizeGrip to let the user set its height, and pass
+    height_key to remember that height across restarts."""
 
     _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
-    _GRIP_PX = 6    # band at the bottom edge that starts a resize drag
     _MIN_HEIGHT = 40
 
     def __init__(self, height_key=None, height=72, parent=None):
         super().__init__(parent)
         self._height_key = height_key
-        self._drag_from = None
-        self.viewport().setMouseTracking(True)
         self.setFixedHeight((height_key and get_note_height(height_key)) or height)
 
-    def _in_grip(self, pos):
-        return pos.y() >= self.viewport().height() - self._GRIP_PX
+    def set_box_height(self, px):
+        """Resize the box, floored. Not written to settings until save_height()."""
+        self.setFixedHeight(max(self._MIN_HEIGHT, px))
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self._in_grip(event.pos()):
-            self._drag_from = (event.globalPosition().toPoint().y(), self.height())
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag_from is not None:
-            start_y, start_h = self._drag_from
-            delta = event.globalPosition().toPoint().y() - start_y
-            self.setFixedHeight(max(self._MIN_HEIGHT, start_h + delta))
-            return
-        self.viewport().setCursor(Qt.CursorShape.SizeVerCursor if self._in_grip(event.pos())
-                                    else Qt.CursorShape.IBeamCursor)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._drag_from is not None:
-            self._drag_from = None
-            if self._height_key:
-                set_note_height(self._height_key, self.height())
-            return
-        super().mouseReleaseEvent(event)
-
-    def leaveEvent(self, event):
-        self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
-        super().leaveEvent(event)
+    def save_height(self):
+        """Remember the current height for next time, if this box is keyed."""
+        if self._height_key:
+            set_note_height(self._height_key, self.height())
 
     def mouseDoubleClickEvent(self, event):
         # Call super() first: besides doing Qt's default word selection (which we
@@ -133,6 +120,37 @@ class WordSelectTextEdit(QTextEdit):
                 cursor.setPosition(block.position() + m.end(), QTextCursor.MoveMode.KeepAnchor)
                 self.setTextCursor(cursor)
                 return
+
+
+class NoteResizeGrip(QFrame):
+    """Grey line above a note box. Drag it up to make the box taller."""
+
+    _HEIGHT = 7  # thin line, but a band tall enough to grab
+
+    def __init__(self, target):
+        super().__init__()
+        self._target = target
+        self._drag_from = None
+        self.setFrameShape(QFrame.Shape.HLine)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        self.setStyleSheet("color: #808080;")  # reads as grey on either theme
+        self.setFixedHeight(self._HEIGHT)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_from = (event.globalPosition().toPoint().y(), self._target.height())
+
+    def mouseMoveEvent(self, event):
+        if self._drag_from is not None:
+            start_y, start_h = self._drag_from
+            self._target.set_box_height(
+                start_h + (start_y - event.globalPosition().toPoint().y()))
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_from is not None:
+            self._drag_from = None
+            self._target.save_height()
 
 
 class SceneTable(QTableWidget):
@@ -505,8 +523,9 @@ class FlagDialog(SizePersistentDialog):
             layout.addWidget(cb)
             self._checks[flag_id] = cb
 
-        layout.addWidget(QLabel("Note:"))
         self._note = WordSelectTextEdit(height_key='flags')
+        layout.addWidget(NoteResizeGrip(self._note))
+        layout.addWidget(QLabel("Note:"))
         self._note.setPlaceholderText("Optional additional context...")
         layout.addWidget(self._note)
 
@@ -691,8 +710,9 @@ class NotesDialog(SizePersistentDialog):
         edit_layout.addStretch()
         layout.addWidget(edit_row)
 
-        layout.addWidget(QLabel("Add a note:"))
         self.input = WordSelectTextEdit(height_key='notes', height=80)
+        layout.addWidget(NoteResizeGrip(self.input))
+        layout.addWidget(QLabel("Add a note:"))
         self.input.setPlaceholderText("Type a note...")
         layout.addWidget(self.input)
 
@@ -880,6 +900,9 @@ class ChangeUsernameDialog(SizePersistentDialog):
             return
         try:
             update_username(self._conn, self._user['id'], new_name)
+        except ConnectionLost as e:
+            QMessageBox.warning(self, *connection_lost_message(e))
+            return
         except sqlite3.OperationalError as e:
             if 'locked' not in str(e).lower():
                 raise
@@ -943,6 +966,9 @@ class ChangePasswordDialog(SizePersistentDialog):
             return
         try:
             update_user_password(self._conn, self._user['id'], hash_password(new_pw))
+        except ConnectionLost as e:
+            QMessageBox.warning(self, *connection_lost_message(e))
+            return
         except sqlite3.OperationalError as e:
             if 'locked' not in str(e).lower():
                 raise
@@ -1513,6 +1539,8 @@ class Dashboard(QMainWindow):
             return True
         except ValueError as e:
             QMessageBox.warning(self, error_title, str(e))
+        except ConnectionLost as e:
+            QMessageBox.warning(self, *connection_lost_message(e))
         except sqlite3.OperationalError as e:
             if 'locked' in str(e).lower():
                 QMessageBox.warning(
@@ -1530,6 +1558,9 @@ class Dashboard(QMainWindow):
         db._with_read_retry)."""
         try:
             return fn()
+        except ConnectionLost as e:
+            QMessageBox.warning(self, *connection_lost_message(e))
+            return default
         except sqlite3.OperationalError as e:
             if 'locked' in str(e).lower():
                 QMessageBox.warning(

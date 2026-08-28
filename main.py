@@ -77,7 +77,7 @@ _try_update()
 try:
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from PyQt6.QtGui import QIcon
-    from app.db import get_db_connection, initialize_db
+    from app.db import get_db_connection, initialize_db, keepalive, KEEPALIVE_SECONDS
     from app.ui.login import LoginUI
     from app.resources import ICON_PATH
 
@@ -130,6 +130,15 @@ try:
         app = QApplication(sys.argv)
         _install_crash_handler()
         app.setWindowIcon(QIcon(ICON_PATH))
+
+        # Parented to the app, not a window: the one connection outlives the
+        # login screen, both dashboards and every logout, and so must the timer
+        # that keeps it alive.
+        from PyQt6.QtCore import QTimer
+        keepalive_timer = QTimer(app)
+        keepalive_timer.timeout.connect(lambda: keepalive(conn))
+        keepalive_timer.start(KEEPALIVE_SECONDS * 1000)
+
         from app.local_settings import get_dark_mode
         from app.ui.styles import apply_theme
         apply_theme(get_dark_mode())
