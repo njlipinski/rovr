@@ -244,55 +244,22 @@ foreach ($name in @($armAsset, $intelAsset)) {
 [System.IO.File]::WriteAllText((Join-Path $rovrDir 'launch_rovr.command'), $launcherText)
 Write-Host "  launch_rovr.command"
 
-# ---------------------------------------------------------------------------
-# Transitional root copies
-#
-# Clients predating the ROVR subfolder read everything from the Pancam root, so
-# the root has to stay fully populated until they have all updated once. Delete
-# this whole block, and these files from the drive, when every user is on a
-# build that resolves the subfolder.
-#
-# The exe and the root version file must move TOGETHER. Advancing the root
-# version file while leaving a stale root exe puts an old client in an infinite
-# relaunch loop: it copies the stale exe, restarts, still reads the newer
-# version number, and copies again.
-# ---------------------------------------------------------------------------
-
-Write-Host "Staging transitional copies to $pancamPath ..."
-
-Copy-Item (Join-Path $stagingDir $winAsset) (Join-Path $pancamPath $winAsset) -Force
-Write-Host "  $winAsset"
-
-[System.IO.File]::WriteAllText((Join-Path $pancamPath 'launch_rovr.command'), $launcherText)
-Write-Host "  launch_rovr.command"
-
-# Mac users still on the pre-arch-aware launcher copy this path unconditionally,
-# so it has to keep tracking the arm64 build or they would silently stall on an
-# old version while recording the new version number as installed. Best effort:
-# this is the Windows-extraction path with the mode-bit problem described above.
-$legacyApp = Join-Path $pancamPath 'rovr.app'
-$legacyTmp = Join-Path $stagingDir 'legacy'
-Expand-Archive -Path (Join-Path $stagingDir $armAsset) -DestinationPath $legacyTmp -Force
-robocopy (Join-Path $legacyTmp 'rovr.app') $legacyApp /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-# robocopy uses 0-7 for success (1 = files copied, 3 = copied + extra removed).
-if ($LASTEXITCODE -ge 8) {
-    Write-Error "robocopy failed staging the transitional rovr.app (exit $LASTEXITCODE)."
-    exit 1
-}
-Write-Host "  rovr.app (arm64, for pre-arch-aware launchers)"
+# The config template users copy locally. Nothing reads this copy; staging it
+# each release just keeps it from drifting behind config.example.py.
+Copy-Item (Join-Path $PSScriptRoot 'config.example.py') (Join-Path $rovrDir 'config.py') -Force
+Write-Host "  config.py"
 
 # ---------------------------------------------------------------------------
-# Version markers, written LAST in both locations
+# Version marker, written LAST
 #
 # Every updater reads this file to decide whether to update, so writing it
 # before the payloads are staged would send a client after a build that is not
-# on the drive yet. rovr_dir() also treats the subfolder's copy as the marker
-# that the subfolder is complete, so it must be the last thing written there.
+# on the drive yet. rovr_dir() also treats it as the marker that the subfolder
+# is complete, so it must be the last thing written there.
 # ---------------------------------------------------------------------------
 
 [System.IO.File]::WriteAllText((Join-Path $rovrDir 'rovr-version.txt'), $version)
-[System.IO.File]::WriteAllText((Join-Path $pancamPath 'rovr-version.txt'), $version)
-Write-Host "  rovr-version.txt -> $version (both locations)"
+Write-Host "  rovr-version.txt -> $version"
 
 Write-Host ""
 Write-Host "Done. ROVR $tag released and staged."

@@ -5,8 +5,6 @@ import shutil
 import subprocess
 
 # When frozen, config.py lives beside the exe/app (not bundled).
-# On macOS, sys.executable is deep inside rovr.app/Contents/MacOS/ — walk up
-# past the .app bundle to find the folder that actually contains config.py.
 if getattr(sys, 'frozen', False):
     if sys.platform == 'darwin':
         _p = sys.executable
@@ -20,9 +18,7 @@ if getattr(sys, 'frozen', False):
 def _try_update():
     """Check R drive for a newer build; if found, replace local exe and relaunch.
 
-    Only runs on Windows frozen builds. Silently skips on any error (R drive
-    unavailable, no version file, permissions issue, etc.) so a failed update
-    never prevents ROVR from starting.
+    Only runs on Windows frozen builds.
     """
     if not getattr(sys, 'frozen', False) or sys.platform != 'win32':
         return
@@ -55,8 +51,7 @@ def _try_update():
         if _ver(latest_ver) <= _ver(current_ver):
             return  # already up to date
 
-        # Rename local exe out of the way (allowed on local NTFS even for a
-        # running exe), copy the new build in, then relaunch.
+        # Rename local exe out of the way, copy the new build in, then relaunch.
         backup = local_exe + '.bak'
         if os.path.exists(backup):
             os.remove(backup)
@@ -66,7 +61,12 @@ def _try_update():
             os.remove(backup)
         except OSError:
             pass
-        subprocess.Popen([local_exe] + sys.argv[1:])
+
+        # Relaunch the new build with the same command line, but without PyInstaller
+        # environment variables that would make it think it's still frozen.
+        child_env = {k: v for k, v in os.environ.items()
+                        if not k.startswith('_PYI_') and k != '_MEIPASS2'}
+        subprocess.Popen([local_exe] + sys.argv[1:], env=child_env)
         os._exit(0)
     except Exception:
         pass  # silently continue with current version
@@ -87,10 +87,7 @@ try:
         return os.path.join(log_dir, 'error.log')
 
     def _install_crash_handler():
-        """Log and surface unhandled exceptions raised inside Qt slots (button
-        clicks, etc). Without this, PyQt6's default behavior is to print to
-        stderr (invisible in a windowed/console=False build) and then abort
-        the whole process — the app just vanishes with no error shown."""
+        """Log and surface unhandled exceptions raised inside Qt slots"""
         import traceback
         from datetime import datetime
 
@@ -119,9 +116,7 @@ try:
         initialize_db()
         conn = get_db_connection()
 
-        # Must be set before QApplication is constructed — Qt reads this env
-        # var once, at platform-integration startup, to uniformly scale all
-        # widget geometry and fonts (buttons, tables, dialogs included).
+        # Must be set before QApplication is constructed
         from app.local_settings import get_ui_scale
         ui_scale = get_ui_scale()
         if ui_scale != 1.0:
