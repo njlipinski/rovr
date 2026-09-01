@@ -36,30 +36,26 @@ except ImportError:
     PANCAM_PATH = None
     DB_PATH = None
 
-# Current sol folder pattern (no 'sol' prefix) — used by the folder scanner
-# and build_folders, which both operate on the current rover/####/<kind> layout.
+# Current sol folder pattern.
 _SOL_RE = re.compile(r'^(\d{4})$')
 
-# Old sol folder pattern ('solNNNN') — used only by restructure_folders() to
+# Old sol folder pattern ('solNNNN') used only by restructure_folders() to
 # find sol directories still in the pre-migration rover/<kind>/solNNNN layout.
 _OLD_SOL_RE = re.compile(r'^sol(\d{4})$', re.IGNORECASE)
 
 # MER Pancam filename stem is exactly 27 chars (plus 3-char extension):
 # [scid(1)][inst(1)][sclk(9)][prod(3)][site(4)][seq(5)][eye(1)][filt(1)][who(1)][ver(1)]
-# The seq field (chars 17-21) is always 'P####' — the 4 digits are the seqID.
+# The seq field (chars 17-21) is always 'P####' where the 4 digits are the seqID.
 _STEM_LEN = 27
 
-# Trailing ROI Studio folder "revision" tag — unrelated to SEQ_VER, just a
-# manual re-save marker analysts append to a folder name. Preserved as-is by
+# Trailing ROI Studio folder "revision" tag. Preserved as-is by
 # rename_folders() and never carried onto the .fits/.sel file names inside,
 # mirroring app/ui/dashboard.py's _find_scene_file convention.
 _REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
 
 # Pre-migration ROI Studio working/ folder name, once any trailing revision
-# tag above has been stripped: Sol####_p####[v#]_PMA# — the embedded 'v#' is
-# only present in one of the two old conventions and is never trusted (SEQ_VER
-# is always re-read from the DB instead). Folders that don't match this exactly
-# (e.g. already carrying a _<NAME> suffix) are assumed already migrated.
+# tag above has been stripped: Sol####_p####[v#]_PMA#. Folders that don't match this 
+# exactly (e.g. already carrying a _<NAME> suffix) are assumed already migrated.
 _OLD_ROI_FOLDER_RE = re.compile(r'^Sol(\d{4})_p(\d{4})(?:v\d+)?_PMA(\d+)$')
 
 
@@ -327,7 +323,6 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
     existing = {row[0] for row in existing_rows}
     existing_pma = {row[0]: (row[1], row[2]) for row in existing_rows}
 
-    # First pass — group rows
     groups = {}      # scene_key -> representative row dict
     group_rank = {}  # scene_key -> that representative's selection rank
     row_counts = {}
@@ -399,9 +394,8 @@ def import_scenes_from_csv(conn, csv_path, dry_run=False):
     label = "  [dry run]" if dry_run else ""
     print(f"{label}+{len(new_scenes)} imported, {skip_count} already existed")
 
-    # PMA drift correction — see docstring. Only scenes already in the DB
-    # (skipped above) are eligible; a CSV pma of None never overwrites a
-    # known value.
+    # PMA drift correction. Only scenes already in the DB (skipped above) are eligible; 
+    # a CSV pma of None never overwrites a known value.
     pma_updates = []
     for key in existing:
         s = groups.get(key)
@@ -467,7 +461,7 @@ def restructure_folders(pancam_root, dry_run=False):
     for kind in FolderKind.ALL (iof, edr, practice, working), dropping the
     old 'sol' prefix to match the current bare-#### naming convention.
 
-    Safe to re-run — skips any sol dir whose destination already exists,
+    Safe to re-run.  Skips any sol dir whose destination already exists,
     and removes each <kind> root once it's empty.
     """
     pancam_path = Path(pancam_root)
@@ -510,8 +504,8 @@ def restructure_folders(pancam_root, dry_run=False):
 
 
 def rename_folders(conn, pancam_root, dry_run=False):
-    """One-off migration: rename ROI Studio working/ folders — and the .fits/.sel
-    files inside them — from the old Sol####_p####[v#]_PMA# convention to the
+    """One-off migration: rename ROI Studio working/ folders and the .fits/.sel
+    files inside them from the old Sol####_p####[v#]_PMA# convention to the
     current Sol####_p####v#_PMA#_<NAME> convention, where the v# (SEQ_VER) and
     <NAME> segments come from the matching DB scene row (matched on rover, sol,
     seq_id, and pma).
@@ -520,11 +514,7 @@ def rename_folders(conn, pancam_root, dry_run=False):
     never carried onto the file names inside it (the files are always named
     after the folder's own name with that trailing tag stripped).
 
-    Safe to re-run — only folders whose (revision-tag-stripped) name is a bare
-    Sol####_p####[v#]_PMA# match are touched; anything else is assumed already
-    migrated. Folders with no matching scene, an ambiguous (>1) match, or a
-    rename destination that already exists are skipped with a warning.
-    """
+    Safe to re-run."""
     pancam_path = Path(pancam_root)
     rovers = ["MERA", "MERB"]
 
@@ -596,10 +586,7 @@ def rename_folders(conn, pancam_root, dry_run=False):
 
                 if not dry_run:
                     # The .png panels ROI Studio saves alongside the .fits/.sel
-                    # follow the same stem and have to move with it — leaving
-                    # them behind is what stranded older folders' images under
-                    # a name that no longer matches anything (see
-                    # fix_panel_names(), which repairs those).
+                    # follow the same stem and have to move with it. 
                     #
                     # Renaming the files bumps this folder's own mtime, which
                     # is what Explorer sorts by, so it is captured first and
@@ -629,9 +616,8 @@ def fix_panel_names(pancam_root, dry_run=False):
 
     rename_folders() originally moved only the .fits/.sel when it renamed a
     folder, so every folder it touched still holds images under the
-    pre-migration stem — e.g. Sol0007_p2530_PMA791_left_dcs.png inside
-    Sol0007_p2530v1_PMA791_pancam_magic_carpet. Those folders look already
-    migrated to rename_folders() and are skipped by it, so they need this pass.
+    pre-migration stem. Those folders look already migrated to rename_folders() 
+    and are skipped by it, so they need this pass.
 
     Only files ending in one of the known panel suffixes are considered, and a
     file is renamed only if its stem differs from the folder's own
@@ -1101,14 +1087,15 @@ def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False
 
 def copy_approved_fits(conn, pancam_root, dry_run=False):
     """Copy the latest .fits file for every approved (status 7) scene into
-    <pancam_root>/ready_for_asdf.
+    <pancam_root>/ready_for_asdf/<rover>. Both subfolders always exist, even if
+    a run copies nothing into one.
 
-    Safe to re-run — a destination file that already exists is left alone
-    (never re-copied), same spirit as backup_scenes' working-file mirror.
-    """
-    dest_dir = Path(pancam_root) / "ready_for_asdf"
+    Safe to re-run."""
+    dest_root = Path(pancam_root) / "ready_for_asdf"
+    rovers = ["MERA", "MERB"]
     if not dry_run:
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        for rover in rovers:
+            (dest_root / rover).mkdir(parents=True, exist_ok=True)
 
     scenes = conn.execute(
         "SELECT * FROM scenes WHERE status = ?", (SceneStatus.APPROVED,)
@@ -1122,7 +1109,7 @@ def copy_approved_fits(conn, pancam_root, dry_run=False):
             missing += 1
             continue
 
-        dest_path = dest_dir / os.path.basename(fits_path)
+        dest_path = dest_root / scene['rover'] / os.path.basename(fits_path)
         if dest_path.exists():
             skipped += 1
             continue

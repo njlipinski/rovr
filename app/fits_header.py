@@ -1,17 +1,5 @@
 # app/fits_header.py
-"""Minimal FITS header reader.
-
-ROI Studio stores each ROI's analyst-assigned metadata in the header of its own
-image HDU, so building a summary slide means reading headers out of an ~18 MB
-.fits. Everything here reads ASCII header cards and seeks past pixel data —
-nothing decodes an image, and no third-party library is needed for that.
-
-Only the parts of the standard ROI Studio actually emits are implemented:
-fixed 80-byte cards in 2880-byte blocks, HIERARCH long keywords, and the
-CONTINUE long-string convention. Values are returned as str, int, float or
-bool; anything unrecognised is left as the raw trimmed string rather than
-guessed at.
-"""
+"""Minimal FITS header reader."""
 import os
 
 BLOCK = 2880   # FITS logical record size
@@ -65,7 +53,7 @@ def _coerce(raw):
 def _parse_card(card):
     """Return (keyword, raw_value_field) for one 80-byte card, or (None, None).
 
-    HIERARCH is how FITS carries keywords longer than 8 characters — ROI Studio
+    HIERARCH is how FITS carries keywords longer than 8 characters. ROI Studio
     uses it for FEATURE_SUBTYPE and INSTRUMENT, among others."""
     if card.startswith('HIERARCH '):
         body = card[len('HIERARCH '):]

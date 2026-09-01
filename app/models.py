@@ -27,9 +27,8 @@ class SceneStatus:
     }
 
     # A scene is waiting on a supervisor in either of these: the shared pool
-    # (5), or a supervisor's own queue (6). Both belong here — a resubmission
-    # with a supervisor already attached goes straight to 6 and never passes
-    # through 5 
+    # (5), or a supervisor's own queue (6). A resubmission with a supervisor 
+    # already attached goes straight to 6 and never passes through 5 
     SUPERVISOR_BOUND = (PENDING_SUPERVISOR, IN_SUPERVISOR_REVIEW)
 
 
@@ -85,6 +84,16 @@ class Stage:
 class Role:
     ANALYST    = 'analyst'
     SUPERVISOR = 'supervisor'
+
+
+class _Unchanged:
+    """Sentinel: a field a batch edit left alone, so each scene keeps its own
+    value. Distinct from None, which means "clear this field"."""
+    def __repr__(self):
+        return 'UNCHANGED'
+
+
+UNCHANGED = _Unchanged()
 
 
 @dataclass

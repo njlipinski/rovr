@@ -21,17 +21,25 @@ from app.controller import (
     supervisor_review_scene, supervisor_edit_scene, supervisor_reset_scene,
     mark_scene_issues,
 )
-from app.models import SceneStatus, Decision, Role
+from app.models import SceneStatus, Decision, Role, UNCHANGED
 from app.paths import find_fits_file
 from config import PANCAM_PATH
 
 
-def _make_user_combo(conn, roles, current_id):
-    """QComboBox listing active users with the given role(s), plus a "— None —"
+_LEAVE_UNCHANGED = "(leave unchanged)"
+
+
+def _make_user_combo(conn, roles, current_id, batch=False):
+    """QComboBox listing active users with the given role(s), plus a "(none)"
     entry. If current_id refers to a user outside that set (e.g. deactivated),
-    it's still appended so the combo can show and preserve that assignment."""
+    it's still appended so the combo can show and preserve that assignment.
+
+    In batch mode a leading "leave unchanged" entry is added and selected: the
+    scenes may hold different values, so only fields moved off it are written."""
     combo = QComboBox()
-    combo.addItem("— None —", None)
+    if batch:
+        combo.addItem(_LEAVE_UNCHANGED, UNCHANGED)
+    combo.addItem("(none)", None)
     listed_ids = set()
     for u in get_all_users(conn):
         if u['role'] in roles and u['active']:
@@ -41,45 +49,67 @@ def _make_user_combo(conn, roles, current_id):
         current_user = get_user_by_id(conn, current_id)
         label = f"{current_user['username']} (inactive)" if current_user else f"user #{current_id} (deleted)"
         combo.addItem(label, current_id)
-    idx = combo.findData(current_id)
-    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    if batch:
+        combo.setCurrentIndex(0)
+    else:
+        idx = combo.findData(current_id)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
     return combo
 
 
 class EditSceneDialog(SizePersistentDialog):
     """Supervisor admin dialog: edit a scene's status and directly reassign
-    its owner, peer reviewer, supervisor, and claimed-by fields."""
+    its owner, peer reviewer, supervisor, and claimed-by fields.
+
+    `scene=None` is batch mode: nothing is seeded, every field defaults to
+    "leave unchanged", and the caller applies the result to `count` scenes."""
     _size_key = 'edit_scene'
 
-    def __init__(self, conn, scene, parent=None):
+    def __init__(self, conn, scene, parent=None, count=1):
         super().__init__(parent)
-        self.setWindowTitle("Edit Scene")
+        batch = scene is None
+        self.setWindowTitle(f"Edit {count} Scenes" if batch else "Edit Scene")
         self.setMinimumWidth(360)
         self._restore_size()
         layout = QVBoxLayout(self)
 
+        def current(field):
+            return None if batch else scene[field]
+
+        if batch:
+            note = QLabel(f"Editing {count} scenes. Any field left on "
+                          f'"{_LEAVE_UNCHANGED}" keeps each scene\'s own value.')
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
         layout.addWidget(QLabel("Status:"))
         self.status_combo = QComboBox()
+        if batch:
+            self.status_combo.addItem(_LEAVE_UNCHANGED, UNCHANGED)
         for status, label in SceneStatus.LABELS.items():
             self.status_combo.addItem(label, status)
-        idx = self.status_combo.findData(scene['status'])
-        self.status_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if batch:
+            self.status_combo.setCurrentIndex(0)
+        else:
+            idx = self.status_combo.findData(scene['status'])
+            self.status_combo.setCurrentIndex(idx if idx >= 0 else 0)
         layout.addWidget(self.status_combo)
 
         layout.addWidget(QLabel("Owner:"))
-        self.owner_combo = _make_user_combo(conn, {Role.ANALYST}, scene['owner_id'])
+        self.owner_combo = _make_user_combo(conn, {Role.ANALYST}, current('owner_id'), batch)
         layout.addWidget(self.owner_combo)
 
         layout.addWidget(QLabel("Peer Reviewer:"))
-        self.peer_combo = _make_user_combo(conn, {Role.ANALYST}, scene['peer_reviewer_id'])
+        self.peer_combo = _make_user_combo(conn, {Role.ANALYST}, current('peer_reviewer_id'), batch)
         layout.addWidget(self.peer_combo)
 
         layout.addWidget(QLabel("Supervisor:"))
-        self.supervisor_combo = _make_user_combo(conn, {Role.SUPERVISOR}, scene['supervisor_id'])
+        self.supervisor_combo = _make_user_combo(conn, {Role.SUPERVISOR}, current('supervisor_id'), batch)
         layout.addWidget(self.supervisor_combo)
 
         layout.addWidget(QLabel("Claimed By:"))
-        self.claimed_combo = _make_user_combo(conn, {Role.ANALYST, Role.SUPERVISOR}, scene['claimed_by'])
+        self.claimed_combo = _make_user_combo(
+            conn, {Role.ANALYST, Role.SUPERVISOR}, current('claimed_by'), batch)
         layout.addWidget(self.claimed_combo)
 
         self.notes = WordSelectTextEdit(height_key='edit_scene')
@@ -111,6 +141,21 @@ class EditSceneDialog(SizePersistentDialog):
 
     def get_notes(self):
         return self.notes.toPlainText().strip() or None
+
+    def changed_summary(self):
+        """The fields this dialog will actually write, for the batch confirm
+        prompt. Empty if every field was left unchanged."""
+        return "; ".join(
+            f"{label} -> {combo.currentText()}"
+            for label, combo in (
+                ("Status",        self.status_combo),
+                ("Owner",         self.owner_combo),
+                ("Peer Reviewer", self.peer_combo),
+                ("Supervisor",    self.supervisor_combo),
+                ("Claimed By",    self.claimed_combo),
+            )
+            if combo.currentData() is not UNCHANGED
+        )
 
 
 # Master list columns: header label -> field name (None = parsed from scene_key)
@@ -331,7 +376,7 @@ class SupervisorDashboard(Dashboard):
         return ok
 
     def _copy_fits_to_ready_for_asdf(self, scene_id):
-        """Mirror the just-approved scene's .fits file into PANCAM_PATH/ready_for_asdf.
+        """Mirror the just-approved scene's .fits file into PANCAM_PATH/ready_for_asdf/<rover>.
         The approval itself has already been recorded in the DB by this point, so a
         copy problem (missing file, network hiccup) is surfaced as a warning rather
         than rolled back or allowed to block the workflow.
@@ -347,8 +392,10 @@ class SupervisorDashboard(Dashboard):
             return (f"'{scene['name']}' was approved, but no .fits file could be "
                     "found to copy to ready_for_asdf.")
         try:
-            dest_dir = os.path.join(PANCAM_PATH, "ready_for_asdf")
-            os.makedirs(dest_dir, exist_ok=True)
+            dest_root = os.path.join(PANCAM_PATH, "ready_for_asdf")
+            for rover in ("MERA", "MERB"):
+                os.makedirs(os.path.join(dest_root, rover), exist_ok=True)
+            dest_dir = os.path.join(dest_root, scene['rover'])
             shutil.copy2(fits_path, os.path.join(dest_dir, os.path.basename(fits_path)))
         except OSError as e:
             return (f"'{scene['name']}' was approved, but its .fits file could not "
@@ -435,6 +482,9 @@ class SupervisorDashboard(Dashboard):
         scene_id = self.selected_id(self.master_table)
         if scene_id is None:
             return
+        if len(self.selected_ids(self.master_table)) > 1:
+            self._batch_edit_scenes()
+            return
         scene = get_scene_by_id(self.conn, scene_id)
         if scene is None:
             return
@@ -455,6 +505,37 @@ class SupervisorDashboard(Dashboard):
         # Reassigning a scene can take it out of this supervisor's own queue,
         # which is a correction rather than a review they finished.
         self.refresh_task_list(celebrate_empty=False)
+
+    def _batch_edit_scenes(self):
+        """Apply one set of field changes to every selected scene. Fields left
+        unchanged keep each scene's own value, so a batch that disagrees on
+        status can still have just its owner reassigned. Each scene is written
+        and logged on its own, exactly as a single edit is."""
+        count = len(self.selected_ids(self.master_table))
+        dialog = EditSceneDialog(self.conn, None, self, count=count)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        summary = dialog.changed_summary()
+        if not summary:
+            QMessageBox.information(self, "Edit", "No fields were changed.")
+            return
+        self.run_bulk_action(
+            self.master_table,
+            lambda sid: supervisor_edit_scene(
+                self.conn, sid, self.user['id'], dialog.get_status(),
+                owner_id=dialog.get_owner_id(),
+                peer_reviewer_id=dialog.get_peer_reviewer_id(),
+                scene_supervisor_id=dialog.get_supervisor_id(),
+                claimed_by=dialog.get_claimed_by(),
+                comments=dialog.get_notes(),
+            ),
+            "Edit",
+            confirm_msg=f"Apply these changes to {{n}} scenes?\n\n{summary}",
+            done_msg="{done} scene(s) updated.",
+            none_msg="None of the selected scenes could be updated.",
+            partial_msg="{done} scene(s) updated; {skipped} could not be.",
+            celebrate_empty=False,
+        )
 
     def handle_reset_scene(self):
         scene_id = self.selected_id(self.master_table)

@@ -10,7 +10,7 @@ from app.db import (
     record_submission, record_peer_review, record_supervisor_review,
     record_force_release, record_scene_edit, record_scene_reset,
 )
-from app.models import SceneStatus, Decision, Stage, SceneFlag
+from app.models import SceneStatus, Decision, Stage, SceneFlag, UNCHANGED
 
 
 def claim_from_pool(conn, scene_id, analyst_id):
@@ -51,7 +51,7 @@ def submit_scene(conn, scene_id, analyst_id, comments=None):
 
 
 def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
-    """analyst 2 reviews a claimed scene (3) — approve -> pending supervisor (5),
+    """analyst 2 reviews a claimed scene (3): approve -> pending supervisor (5),
     or kick back -> needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_REVIEW:
@@ -68,9 +68,7 @@ def peer_review_scene(conn, scene_id, reviewer_id, decision, comments):
 
 
 def mark_scene_issues(conn, scene_id, supervisor_id):
-    """supervisor marks a claimed scene (6) as having issues (8) — a shortcut for
-    the common case of a flagged scene reaching supervisor review, instead of
-    needing to find it in the master list and use Edit Scene"""
+    """supervisor marks a claimed scene (6) as having issues (8)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
         raise ValueError("Scene is not in supervisor review")
@@ -105,7 +103,7 @@ def release_supervisor_review(conn, scene_id, supervisor_id):
 
 
 def supervisor_review_scene(conn, scene_id, supervisor_id, decision, comments):
-    """supervisor reviews a claimed scene (6) — approve -> approved (7),
+    """supervisor reviews a claimed scene (6): approve -> approved (7),
     or kick back -> needs revision (4)"""
     scene = get_scene_by_id(conn, scene_id)
     if scene['status'] != SceneStatus.IN_SUPERVISOR_REVIEW:
@@ -181,12 +179,23 @@ def supervisor_edit_scene(conn, scene_id, supervisor_id, new_status,
                             comments=None):
     """supervisor admin edit: set a scene's status and directly reassign owner,
     peer reviewer, supervisor, and claimed_by in one action. Pass through the
-    scene's current values for any field that isn't being changed."""
-    if new_status not in SceneStatus.LABELS:
-        raise ValueError(f"Invalid status: {new_status}")
+    scene's current values for any field that isn't being changed, or UNCHANGED
+    to keep whatever this scene already has."""
     old_scene = get_scene_by_id(conn, scene_id)
     if old_scene is None:
         raise ValueError(f"Scene {scene_id} not found")
+
+    def keep(value, field):
+        return old_scene[field] if value is UNCHANGED else value
+
+    new_status          = keep(new_status, 'status')
+    owner_id            = keep(owner_id, 'owner_id')
+    peer_reviewer_id    = keep(peer_reviewer_id, 'peer_reviewer_id')
+    scene_supervisor_id = keep(scene_supervisor_id, 'supervisor_id')
+    claimed_by          = keep(claimed_by, 'claimed_by')
+
+    if new_status not in SceneStatus.LABELS:
+        raise ValueError(f"Invalid status: {new_status}")
     note = comments or _describe_scene_edit(
         conn, old_scene, new_status, owner_id, peer_reviewer_id, scene_supervisor_id, claimed_by
     )
