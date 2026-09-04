@@ -762,6 +762,23 @@ def _kickback_counts(conn, user_id, owner_column):
         (user_id, Decision.NEEDS_REVISION), distinct_col='r.scene_id')
 
 
+def _my_multi_kick_count(conn, user_id):
+    """Count of distinct scenes kicked back 2+ times by one supervisor in a
+    given period."""
+    return _period_counts(
+        conn,
+        "("
+        "  SELECT r.scene_id, r.timestamp,"
+        "         ROW_NUMBER() OVER (PARTITION BY r.scene_id"
+        "                            ORDER BY r.timestamp, r.id) AS kick_num"
+        "  FROM reviews r JOIN scenes s ON r.scene_id=s.id"
+        "  WHERE s.supervisor_id=? AND r.stage=? AND r.decision=?"
+        ") r WHERE r.kick_num >= 2",
+        (user_id, Stage.SUPERVISOR_REVIEW, Decision.NEEDS_REVISION),
+        distinct_col='r.scene_id'
+    )
+    
+    
 def _multi_kickback_counts(conn, user_id):
     """Distinct scenes owned by user_id that needed 2+ rounds of SUPERVISOR
     revision. ROW_NUMBER stamps each supervisor kick-back with its position in
@@ -838,6 +855,9 @@ def get_supervisor_stats(conn, user_id):
         'kicked_back_total': kickbacks['total'],
         'kicked_back_week': kickbacks['week'],
         'kicked_back_today': kickbacks['today'],
+        'multi_kickback_scenes_total': _my_multi_kick_count(conn, user_id)['total'],
+        'multi_kickback_scenes_week': _my_multi_kick_count(conn, user_id)['week'],
+        'multi_kickback_scenes_today': _my_multi_kick_count(conn, user_id)['today'],
     }
 
 

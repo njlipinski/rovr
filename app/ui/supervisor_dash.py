@@ -1,6 +1,4 @@
 """supervisor dashboard — pool, personal queue, in-progress, and master list"""
-import os
-import shutil
 from PyQt6.QtWidgets import (
     QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
@@ -22,7 +20,10 @@ from app.controller import (
     mark_scene_issues,
 )
 from app.models import SceneStatus, Decision, Role, UNCHANGED
-from app.paths import find_fits_file
+from app.paths import (
+    find_fits_file, find_summary_slide,
+    READY_DIR, APPROVED_DIR, copy_to_collection,
+)
 from config import PANCAM_PATH
 
 
@@ -370,37 +371,45 @@ class SupervisorDashboard(Dashboard):
             lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
         )
-        if ok:
-            self._copy_fits_to_ready_for_asdf(scene_id)
+        problems = self._copy_approved_outputs(scene_id) if ok else []
         self.refresh_task_list()
+        if problems:
+            QMessageBox.warning(self, "Files Not Copied", "\n\n".join(problems))
         return ok
 
-    def _copy_fits_to_ready_for_asdf(self, scene_id):
-        """Mirror the just-approved scene's .fits file into PANCAM_PATH/ready_for_asdf/<rover>.
-        The approval itself has already been recorded in the DB by this point, so a
-        copy problem (missing file, network hiccup) is surfaced as a warning rather
-        than rolled back or allowed to block the workflow.
+    # The two files a just-approved scene is mirrored into, as
+    # (locate, collection, label). Separate destinations, one copy each.
+    _APPROVED_OUTPUTS = (
+        (find_fits_file,     READY_DIR,    ".fits file"),
+        (find_summary_slide, APPROVED_DIR, "summary slide"),
+    )
 
-        Returns a description of the problem, or None if the copy succeeded. The
-        caller decides how to show it — one dialog for a single approval, or one
-        combined dialog for a batch, rather than a dialog per scene."""
+    def _copy_approved_outputs(self, scene_id):
+        """Mirror a just-approved scene's .fits and summary slide into their own
+        collections on PANCAM_PATH. The approval itself has already been recorded
+        in the DB by this point, so a copy problem (missing file, network hiccup)
+        is surfaced as a warning rather than rolled back or allowed to block the
+        workflow.
+
+        Returns a list of problem descriptions, empty when both copies land. The
+        caller decides how to show them, so a batch pools every scene's into one
+        dialog rather than firing one per file."""
         scene = get_scene_by_id(self.conn, scene_id)
         if scene is None:
-            return None
-        fits_path = find_fits_file(PANCAM_PATH, scene)
-        if not fits_path:
-            return (f"'{scene['name']}' was approved, but no .fits file could be "
-                    "found to copy to ready_for_asdf.")
-        try:
-            dest_root = os.path.join(PANCAM_PATH, "ready_for_asdf")
-            for rover in ("MERA", "MERB"):
-                os.makedirs(os.path.join(dest_root, rover), exist_ok=True)
-            dest_dir = os.path.join(dest_root, scene['rover'])
-            shutil.copy2(fits_path, os.path.join(dest_dir, os.path.basename(fits_path)))
-        except OSError as e:
-            return (f"'{scene['name']}' was approved, but its .fits file could not "
-                    f"be copied to ready_for_asdf:\n{e}")
-        return None
+            return []
+        problems = []
+        for locate, collection, label in self._APPROVED_OUTPUTS:
+            src = locate(PANCAM_PATH, scene)
+            if not src:
+                problems.append(f"'{scene['name']}' was approved, but no {label} "
+                                f"could be found to copy to {collection}.")
+                continue
+            try:
+                copy_to_collection(src, PANCAM_PATH, collection, scene['rover'])
+            except OSError as e:
+                problems.append(f"'{scene['name']}' was approved, but its {label} "
+                                f"could not be copied to {collection}:\n{e}")
+        return problems
 
     def _do_kick_back(self, scene_id, comment=None):
         ok = self._run_db_action(
@@ -413,16 +422,14 @@ class SupervisorDashboard(Dashboard):
         return ok
 
     def handle_approve(self):
-        """Approve every selected scene. The .fits copy runs per scene but its
-        failures are pooled into one dialog afterwards — approving a batch
-        should not mean dismissing a warning for each file that's missing."""
-        fits_problems = []
+        """Approve every selected scene. The copies run per scene but their
+        failures are pooled into one dialog afterwards: approving a batch should
+        not mean dismissing a warning for each file that's missing."""
+        problems = []
 
         def _approve(scene_id):
             supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
-            problem = self._copy_fits_to_ready_for_asdf(scene_id)
-            if problem:
-                fits_problems.append(problem)
+            problems.extend(self._copy_approved_outputs(scene_id))
 
         self.run_bulk_action(
             self.my_queue_table, _approve, "Approve",
@@ -431,8 +438,8 @@ class SupervisorDashboard(Dashboard):
             partial_msg="{done} scene(s) approved; {skipped} were no longer eligible.",
             confirm_msg="Approve {n} scenes?\n\nThis cannot be undone.",
         )
-        if fits_problems:
-            QMessageBox.warning(self, "FITS Not Copied", "\n\n".join(fits_problems))
+        if problems:
+            QMessageBox.warning(self, "Files Not Copied", "\n\n".join(problems))
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()

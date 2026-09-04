@@ -86,6 +86,16 @@ class Role:
     SUPERVISOR = 'supervisor'
 
 
+class Rover:
+    """The two Mars Exploration Rovers, whose names are also the top-level
+    scene folders on PANCAM_PATH and the per-rover subfolder of every output
+    collection (see app/paths.py)."""
+    MERA = 'MERA'
+    MERB = 'MERB'
+
+    ALL = (MERA, MERB)
+
+
 class _Unchanged:
     """Sentinel: a field a batch edit left alone, so each scene keeps its own
     value. Distinct from None, which means "clear this field"."""

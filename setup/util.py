@@ -28,7 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import get_db_connection, initialize_db
 from app.models import SceneStatus
-from app.paths import FolderKind, Panel, sol_dir_name, find_fits_file, versionless_name
+from app.paths import (
+    FolderKind, Panel, sol_dir_name, versionless_name,
+    find_fits_file, find_summary_slide,
+    READY_DIR, APPROVED_DIR, make_collection_dirs, copy_to_collection,
+)
 
 try:
     from config import PANCAM_PATH, DB_PATH
@@ -1085,17 +1089,18 @@ def build_summary_slides(conn, pancam_root, statuses, dry_run=False, force=False
             print(f"     {err}")
 
 
-def copy_approved_fits(conn, pancam_root, dry_run=False):
-    """Copy the latest .fits file for every approved (status 7) scene into
-    <pancam_root>/ready_for_asdf/<rover>. Both subfolders always exist, even if
-    a run copies nothing into one.
+def copy_approved(conn, pancam_root, collection, locate, label, dry_run=False):
+    """Copy one file per approved (status 7) scene into
+    <pancam_root>/<collection>/<rover>. Both rover subfolders always exist,
+    even if a run copies nothing into one.
 
-    Safe to re-run."""
-    dest_root = Path(pancam_root) / "ready_for_asdf"
-    rovers = ["MERA", "MERB"]
+    `locate(pancam_root, scene)` returns the file to copy, or None. A scene
+    with none is reported and skipped, never built here.
+
+    Safe to re-run: a copy already matching its source is left alone, and a
+    newer source overwrites the older copy."""
     if not dry_run:
-        for rover in rovers:
-            (dest_root / rover).mkdir(parents=True, exist_ok=True)
+        make_collection_dirs(pancam_root, collection)
 
     scenes = conn.execute(
         "SELECT * FROM scenes WHERE status = ?", (SceneStatus.APPROVED,)
@@ -1103,26 +1108,26 @@ def copy_approved_fits(conn, pancam_root, dry_run=False):
 
     copied = skipped = missing = 0
     for scene in scenes:
-        fits_path = find_fits_file(pancam_root, scene)
-        if not fits_path:
-            print(f"  MISSING .fits for {scene['name']} (scene id {scene['id']})")
+        src = locate(pancam_root, scene)
+        if not src:
+            print(f"  MISSING {label} for {scene['name']} (scene id {scene['id']})")
             missing += 1
             continue
 
-        dest_path = dest_root / scene['rover'] / os.path.basename(fits_path)
-        if dest_path.exists():
+        dest = copy_to_collection(src, pancam_root, collection, scene['rover'],
+                                  dry_run=dry_run)
+        if dest is None:
             skipped += 1
             continue
 
-        label = "[dry run] " if dry_run else ""
-        print(f"  {label}{fits_path} -> {dest_path}")
-        if not dry_run:
-            shutil.copy2(fits_path, dest_path)
+        prefix = "[dry run] " if dry_run else ""
+        print(f"  {prefix}{src} -> {dest}")
         copied += 1
 
+    verb = "would copy" if dry_run else "copied"
     print(
-        f"\nApproved scenes: {len(scenes)} total, {copied} copied, "
-        f"{skipped} already present, {missing} missing .fits file"
+        f"\nApproved scenes: {len(scenes)} total, {copied} {verb}, "
+        f"{skipped} already current, {missing} missing {label}"
     )
 
 
@@ -1215,7 +1220,15 @@ def cmd_build_slides(args):
 def cmd_copy_approved(args):
     root = _pancam_root(args)
     with _db() as conn:
-        copy_approved_fits(conn, root, dry_run=args.dry_run)
+        copy_approved(conn, root, READY_DIR, find_fits_file, ".fits file",
+                      dry_run=args.dry_run)
+
+
+def cmd_copy_approved_slides(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        copy_approved(conn, root, APPROVED_DIR, find_summary_slide, "summary slide",
+                      dry_run=args.dry_run)
 
 
 def cmd_build_folders(args):
@@ -1296,8 +1309,13 @@ def build_parser():
     p.set_defaults(func=cmd_build_slides)
 
     p = sub.add_parser("copy-approved", parents=[path_opt, preview_opt],
-                        help="Copy each approved scene's latest .fits into <path>/ready_for_asdf.")
+                        help=f"Copy each approved scene's latest .fits into <path>/{READY_DIR}.")
     p.set_defaults(func=cmd_copy_approved)
+
+    p = sub.add_parser("copy-approved-slides", parents=[path_opt, preview_opt],
+                        help=f"Copy each approved scene's summary slide into <path>/{APPROVED_DIR}. "
+                              "Run build-slides first: a scene with no slide is reported, not built.")
+    p.set_defaults(func=cmd_copy_approved_slides)
 
     p = sub.add_parser("build-folders", parents=[path_opt],
                         help="Ensure a subfolder exists under every rover/#### directory.")

@@ -6,6 +6,9 @@ number and <kind> is one of FolderKind's members (iof, edr, practice, working).
 """
 import os
 import re
+import shutil
+
+from app.models import Rover
 
 
 class FolderKind:
@@ -36,19 +39,24 @@ class Panel:
     SPECTRA         = '_spectra.png'
 
     ALL = (LEFT_DCS, LEFT_RGB, LEFT_RGB_NAMED,
-           RIGHT_DCS, RIGHT_RGB, RIGHT_RGB_NAMED, SPECTRA)
+            RIGHT_DCS, RIGHT_RGB, RIGHT_RGB_NAMED, SPECTRA)
 
 
 # Master collection of every scene's summary slide, laid out as
 # PANCAM_PATH/summary_slides/<rover>/<name>. Each slide is also written beside
 # its own source images; the file name is the same in both places.
-# PDF keeps the ROI metadata table as vector text — sharp at any zoom and
-# selectable — and lets a scene with more ROIs than fit continue on a second
-# page. Changing SUMMARY_FORMAT and SUMMARY_SUFFIX together is all it takes to
-# switch the slide to PNG.
+
 SUMMARY_DIR    = 'summary_slides'
 SUMMARY_FORMAT = 'pdf'
 SUMMARY_SUFFIX = '_summary.pdf'
+
+
+# The .fits of every approved scene, for the ASDF pipeline to consume.
+READY_DIR = 'ready_for_asdf'
+
+# The summary slide of every approved scene, for students to browse as worked
+# examples of what a finished scene looks like. 
+APPROVED_DIR = 'approved_slides'
 
 
 # ROVR's own distribution files (the exe, the Mac bundles, the launcher, the
@@ -92,25 +100,19 @@ def kind_path(pancam_path, rover, sol, kind):
     return os.path.join(sol_path(pancam_path, rover, sol), kind)
 
 
-# Trailing ROI Studio folder "revision" tag — unrelated to SEQ_VER, just a
+# Trailing ROI Studio folder "revision" tag. Unrelated to SEQ_VER, just a
 # manual re-save marker analysts append to a folder name.
 _REVISION_TAG_RE = re.compile(r'^(.+)_v(\d+)$', re.IGNORECASE)
 
 
 def versionless_name(folder_name):
-    """Strip a trailing '_v#' revision tag from an ROI Studio folder name.
-
-    The files inside a folder are named after the folder with this tag removed,
-    so this is the stem to build file names from — never the raw folder name."""
+    """Strip a trailing '_v#' revision tag from an ROI Studio folder name."""
     m = _REVISION_TAG_RE.match(folder_name)
     return m.group(1) if m else folder_name
 
 
 def folder_version(folder_name):
-    """The revision number a folder's trailing '_v#' tag carries.
-
-    An untagged folder is the first save, so it ranks as 1 — the same as an
-    explicit '_v1', which is why ranking needs a tiebreak below it."""
+    """The revision number a folder's trailing '_v#' tag carries."""
     m = _REVISION_TAG_RE.match(folder_name)
     return int(m.group(2)) if m else 1
 
@@ -152,7 +154,7 @@ def _matching_folders(pancam_path, scene):
     #   base_name_seqver_NAME               (current "stable", NAME is free-form)
     #   base_name_seqver_NAME_v#            (current, revised)
     # The files inside a folder are always that folder's own name with the
-    # trailing "_v#" stripped — never reconstructed independently.
+    # trailing "_v#" stripped.
     def scan(is_match):
         found = []
         for entry in os.scandir(sol_dir):
@@ -275,8 +277,42 @@ def summary_slide_paths(pancam_path, scene, folder):
     The slide is written twice under one name: next to the images it was built
     from, and into the master collection at summary_slides/<rover>/. The master
     copy is filed under a rover subfolder because the stem carries sol, seq and
-    PMA but not the rover — MERA and MERB sol 0007 would otherwise collide in a
+    PMA but not the rover: MERA and MERB sol 0007 would otherwise collide in a
     flat directory."""
     name = versionless_name(os.path.basename(folder)) + SUMMARY_SUFFIX
     master_dir = os.path.join(pancam_path, SUMMARY_DIR, scene['rover'])
     return os.path.join(folder, name), os.path.join(master_dir, name)
+
+
+def find_summary_slide(pancam_path, scene):
+    """Return this scene's slide from the master collection, or None if it has
+    not been built. Building is build-slides' job; callers here report the gap."""
+    folder = find_scene_folder(pancam_path, scene)
+    if folder is None:
+        return None
+    _beside, master = summary_slide_paths(pancam_path, scene, folder)
+    return master if os.path.isfile(master) else None
+
+
+def make_collection_dirs(pancam_path, collection):
+    """Create <collection>/<rover> for every rover, so both exist even when a
+    run copies nothing into one."""
+    for rover in Rover.ALL:
+        os.makedirs(os.path.join(pancam_path, collection, rover), exist_ok=True)
+
+
+def copy_to_collection(src, pancam_path, collection, rover, dry_run=False):
+    """Copy `src` into <pancam_path>/<collection>/<rover>/, returning the
+    destination if it wrote, or None if the copy there was already current.
+
+    Newest source wins: a re-saved .fits or a rebuilt slide carries the more
+    correct data, so it overwrites. copy2 carries the mtime across, so an
+    unchanged source compares equal on the next run and is left alone."""
+    dest_dir = os.path.join(pancam_path, collection, rover)
+    dest = os.path.join(dest_dir, os.path.basename(src))
+    if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+        return None
+    if not dry_run:
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.copy2(src, dest)
+    return dest

@@ -1183,9 +1183,11 @@ class StatsDialog(SizePersistentDialog):
         ("Rework Rate",         'multi_kickback_rate'),
     ]
 
+    # "2+ Kicks" counts scenes this supervisor kicked back twice or more
     _SUPERVISOR_METRICS = [
         ("Approved",    'approved'),
         ("Kicked Back", 'kicked_back'),
+        ("2+ Kicks",    'multi_kickback_scenes'),
     ]
 
     @staticmethod
