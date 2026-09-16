@@ -1,4 +1,4 @@
-"""supervisor dashboard — pool, personal queue, in-progress, and master list"""
+"""supervisor dashboard: pool, personal queue, in-progress, and master list"""
 from PyQt6.QtWidgets import (
     QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
@@ -203,21 +203,21 @@ class SupervisorDashboard(Dashboard):
     # ── Build UI ────────────────────────────────────────────────────────
 
     def _build_main_content(self):
-        # My Work Queue — scenes claimed by this supervisor (status 6)
+        # My Work Queue: scenes claimed by this supervisor (status 6)
         self.my_queue_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.my_queue_table)
         my_queue_section = make_section("My Work Queue", self.my_queue_table)
 
-        # Supervisor Pool — shared, unclaimed (status 5)
+        # Supervisor Pool: shared, unclaimed (status 5)
         self.pool_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Status", "Obs", "Owner", "Flags", "Updated"]
         )
         apply_flag_delegate(self.pool_table)
         pool_section = make_section("Supervisor Pool", self.pool_table)
 
-        # In Progress — scenes I kicked back, still being revised (status 4)
+        # In Progress: scenes the supervisor has kicked back, still being revised (status 4)
         self.in_progress_table = make_scene_table(
             ["ID", "Rover", "Sol", "SeqID", "Obs", "Status", "Owner", "Flags", "Updated"]
         )

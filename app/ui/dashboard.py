@@ -1,4 +1,4 @@
-"""base dashboard — shared layout, widgets, and utilities for all dashboard types"""
+"""base dashboard: shared layout, widgets, and utilities for all dashboard types"""
 import os
 import re
 import sqlite3

@@ -4,7 +4,7 @@ Everything that controls appearance belongs here:
   - Layout constants (heights, minimum widths)
   - Theme stylesheets (QSS)
   - Shared color values
-  - apply_theme() — applies the active stylesheet to the QApplication
+  - apply_theme() applies the active stylesheet to the QApplication
 """
 
 # ── Layout constants ──────────────────────────────────────────────────────────

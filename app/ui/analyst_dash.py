@@ -271,7 +271,7 @@ class AnalystDashboard(Dashboard):
         """Owner submits a scene they hold (status 1) or resubmits one that was
         kicked back (status 4). A submission from status 4 lands in supervisor
         review directly (status 6 if a supervisor is already attached, else the
-        status-5 pool), so the summary slide is built here too — see
+        status-5 pool), so the summary slide is built here too. See
         _build_slide_if_supervisor_bound."""
         ok = self._run_db_action(
             lambda: submit_scene(self.conn, scene_id, self.user['id'], comment), "Submit Failed"
@@ -332,7 +332,7 @@ class AnalystDashboard(Dashboard):
         than blocking the rest of the batch.
 
         Slide generation runs per scene but its failures are pooled into one
-        dialog afterwards — approving a batch should not mean dismissing a
+        dialog afterwards. Approving a batch should not mean dismissing a
         warning per scene."""
         slide_problems = []
 

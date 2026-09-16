@@ -238,15 +238,15 @@ def update_username(conn, user_id, new_username):
 # ── Scene functions ───────────────────────────────────────────────────────────
 #
 # Status integers:
-#   0 unclaimed             — Scene Pool (shared, all analysts)
-#   1 claimed               — Analyst 1's to-do
-#   2 pending review        — Peer Review Pool (shared, all analysts except owner)
-#   3 in review             — Analyst 2's to-do
-#   4 needs revision        — Analyst 1's to-do
-#   5 pending supervisor    — Supervisor Pool (shared, all supervisors)
-#   6 in supervisor review  — individual supervisor's to-do (claimed)
-#   7 approved              — done (terminal)
-#   8 issues                — flagged as problematic (terminal)
+#   0 - unclaimed             Scene Pool (shared, all analysts)
+#   1 - claimed               Analyst 1's to-do
+#   2 - pending review        Peer Review Pool (shared, all analysts except owner)
+#   3 - in review             Analyst 2's to-do
+#   4 - needs revision        Analyst 1's to-do
+#   5 - pending supervisor    Supervisor Pool (shared, all supervisors)
+#   6 - in supervisor review  individual supervisor's to-do (claimed)
+#   7 - approved              done (terminal)
+#   8 - issues                flagged as problematic (terminal)
 
 def create_scene(conn, name, scene_key, roi_filename=None, owner_id=None):
     """create a scene; owner_id and roi_filename are None for pool-imported scenes
@@ -297,13 +297,13 @@ def release_scene(conn, scene_id):
     if scene is None:
         return
     if scene['status'] == 1:
-        # Returning to Scene Pool — clear ownership so the next claimer starts fresh
+        # Returning to Scene Pool (clears ownership)
         sql = """UPDATE scenes
                 SET status = 0, owner_id = NULL, claimed_by = NULL,
                     updated_at = datetime('now')
                 WHERE id = ?"""
     elif scene['status'] == 3:
-        # Returning to Peer Review Pool — only clear the reviewer's claim
+        # Returning to Peer Review Pool (clears reviewer's claim)
         sql = "UPDATE scenes SET status = 2, claimed_by = NULL, updated_at = datetime('now') WHERE id = ?"
     else:
         return
@@ -566,8 +566,7 @@ def add_note(conn, scene_id, author_id, body):
 
 
 def update_note(conn, note_id, body):
-    """Edit a manually-authored note. Reviews are append-only and never editable —
-    only rows in the notes table can be targeted here."""
+    """Edit a manually-authored note. Reviews are append-only."""
     def _write():
         conn.execute("UPDATE notes SET body = ? WHERE id = ?", (body, note_id))
         conn.commit()

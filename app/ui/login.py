@@ -1,5 +1,5 @@
 # app/ui/login.py
-"""Login window — first screen the user sees"""
+"""Login window"""
 
 import sqlite3
 
@@ -63,7 +63,7 @@ class LoginUI(QWidget):
             QMessageBox.warning(self, "Error", "Please enter a username and password.")
             return
 
-        # LoginUI isn't a Dashboard, so it can't reach _run_db_read — the same
+        # LoginUI isn't a Dashboard, so it can't reach _run_db_read. The same
         # handling is inlined here instead, as it is in the change-username and
         # change-password dialogs. The user lookup is a read, and a locked
         # database on it used to reach the crash dialog.

@@ -84,6 +84,10 @@ _DISTANCE_KEY     = 'DISTANCE'
 _DISTANCE_ABBREV  = {'nearfield': 'near', 'midfield': 'mid', 'farfield': 'far'}
 _HEADER_OVERRIDES = {_DISTANCE_KEY: 'Dist'}
 
+_SUB_SEPARATOR   = " | "
+_SUBTITLE_JOINER = "   |   "
+_ELLIPSIS        = "..."
+
 
 def missing_panels(folder):
     """Captions of the panel images this folder doesn't have.
@@ -280,7 +284,7 @@ def _draw_roi_table(fig, x, y, rois, fields, w=CELL_PX, h=CELL_PX, start=0):
         extra = [v for v in (_display_value(k, roi.get(k)) for k, _ in cont_fields) if v]
         if extra:
             ax.text(tx(indent), ty(top + row_px * 0.74),
-                    _ellipsize(" · ".join(extra), w - indent - _GUTTER_CHARS, sub_fs),
+                    _ellipsize(_SUB_SEPARATOR.join(extra), w - indent - _GUTTER_CHARS, sub_fs),
                     fontsize=sub_fs, color=_SUB_C, ha='left', va='center', style='italic')
 
         if n:
@@ -299,7 +303,9 @@ def _ellipsize(text, width_px, fontsize):
     than it is, which only stayed invisible while the type was small."""
     char_px = fontsize * (DPI / 72.0) * 0.6
     max_chars = max(4, int(width_px / char_px))
-    return text if len(text) <= max_chars else text[:max_chars - 1] + '…'
+    if len(text) <= max_chars:
+        return text
+    return text[:max(1, max_chars - len(_ELLIPSIS))] + _ELLIPSIS
 
 
 def _new_figure():
@@ -316,7 +322,7 @@ def _scene_subtitle(scene, roi_count):
         f"PMA {scene['pma']}" if scene['pma'] is not None else None,
     ) if b]
     bits.append(f"{roi_count} ROI" + ("" if roi_count == 1 else "s"))
-    return "   ·   ".join(str(b) for b in bits)
+    return _SUBTITLE_JOINER.join(str(b) for b in bits)
 
 
 def build_summary_slide(pancam_path, scene, folder=None):

@@ -10,7 +10,7 @@ eye is read.
 The vocabulary of allowed answers is deliberately NOT mirrored here. ROVR
 displays values and never validates them, so new categories need no ROVR
 release. What is needed is field order and labels, and those are read at run
-time from ROI Studio's own resources file — which means they track whatever
+time from ROI Studio's own resources file, which means they track whatever
 version of ROI Studio is installed.
 """
 import json
@@ -67,7 +67,7 @@ def load_field_schema(roi_studio_path=None):
     """Return [(key, label), ...] in the order ROI Studio presents them.
 
     Falls back to a built-in list if ROI Studio isn't installed or its schema
-    file has moved — a missing schema degrades the table's column order and
+    file has moved. A missing schema degrades the table's column order and
     labels, never the values."""
     exe = roi_studio_path if roi_studio_path is not None else get_roi_studio_path()
     if exe:
@@ -169,7 +169,7 @@ def roi_color(name):
 def read_scene_rois(fits_path):
     """Return [{'name': ..., <FIELD>: value, ...}, ...], one entry per ROI.
 
-    Returns an empty list for a scene with no ROIs — that is a legitimate state
+    Returns an empty list for a scene with no ROIs. That is a legitimate state
     the slide has to render, not an error. Raises OSError or ValueError if the
     file can't be read or isn't FITS."""
     from app.fits_header import read_headers

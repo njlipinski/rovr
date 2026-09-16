@@ -954,8 +954,8 @@ def label_scene_panel(folder, fits_path, suffix, eye):
                     fontsize=_LABEL_FS, horizontalalignment='left',
                     verticalalignment='bottom', clip_on=False, annotation_clip=False,
                     bbox={'boxstyle': f'square,pad={_LABEL_PAD}',
-                          'facecolor': _LABEL_BOX, 'edgecolor': 'none',
-                          'alpha': _LABEL_ALPHA})
+                            'facecolor': _LABEL_BOX, 'edgecolor': 'none',
+                            'alpha': _LABEL_ALPHA})
 
     out = os.path.splitext(panel)[0] + '_with_roi_names.png'
     fig.savefig(out, bbox_inches='tight', pad_inches=0, dpi=_LABEL_DPI)
@@ -1115,7 +1115,7 @@ def copy_approved(conn, pancam_root, collection, locate, label, dry_run=False):
             continue
 
         dest = copy_to_collection(src, pancam_root, collection, scene['rover'],
-                                  dry_run=dry_run)
+                                    dry_run=dry_run)
         if dest is None:
             skipped += 1
             continue
@@ -1314,7 +1314,7 @@ def build_parser():
 
     p = sub.add_parser("copy-approved-slides", parents=[path_opt, preview_opt],
                         help=f"Copy each approved scene's summary slide into <path>/{APPROVED_DIR}. "
-                              "Run build-slides first: a scene with no slide is reported, not built.")
+                                "Run build-slides first: a scene with no slide is reported, not built.")
     p.set_defaults(func=cmd_copy_approved_slides)
 
     p = sub.add_parser("build-folders", parents=[path_opt],

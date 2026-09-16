@@ -65,7 +65,6 @@ Deactivating a user automatically returns all their open scenes to the shared po
 - [Workflow](docs/workflow.md): scene lifecycle, status definitions, role responsibilities
 - [Setup Guide](docs/setup.md): network drive, VPN, ROI Studio, asdf, and ROVR installation
 - [Architecture](docs/architecture.md): module map, database schema, invariants, role constraints
-- [Decisions](docs/decisions.md): architecture decision records (ADRs)
 
 ## License
 
