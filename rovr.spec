@@ -37,6 +37,7 @@ a = Analysis(
         'matplotlib.backends.backend_qtagg',
         'matplotlib.backends.backend_agg',
         'matplotlib.backends.backend_pdf',   # summary slides render to PDF
+        'astropy.io.fits',                   # imported lazily for ASDF stamping
     ],
     hookspath=[],
     hooksconfig={},

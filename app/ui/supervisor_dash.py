@@ -20,10 +20,7 @@ from app.controller import (
     mark_scene_issues,
 )
 from app.models import SceneStatus, Decision, Role, UNCHANGED
-from app.paths import (
-    find_fits_file, find_summary_slide,
-    READY_DIR, APPROVED_DIR, copy_to_collection,
-)
+from app.paths import find_summary_slide, APPROVED_DIR, copy_to_collection
 from config import PANCAM_PATH
 
 
@@ -371,27 +368,26 @@ class SupervisorDashboard(Dashboard):
             lambda: supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, comment),
             "Approve Failed"
         )
-        problems = self._copy_approved_outputs(scene_id) if ok else []
+        problems = (self._sync_asdf_copies(scene_id)
+                    + self._copy_approved_outputs(scene_id)) if ok else []
         self.refresh_task_list()
-        if problems:
-            QMessageBox.warning(self, "Files Not Copied", "\n\n".join(problems))
+        self._warn_not_copied(problems)
         return ok
 
-    # The two files a just-approved scene is mirrored into, as
-    # (locate, collection, label). Separate destinations, one copy each.
+    # What a just-approved scene is mirrored into, as (locate, collection,
+    # label). Its .fits goes through _sync_asdf_copies instead.
     _APPROVED_OUTPUTS = (
-        (find_fits_file,     READY_DIR,    ".fits file"),
         (find_summary_slide, APPROVED_DIR, "summary slide"),
     )
 
     def _copy_approved_outputs(self, scene_id):
-        """Mirror a just-approved scene's .fits and summary slide into their own
-        collections on PANCAM_PATH. The approval itself has already been recorded
+        """Mirror a just-approved scene's summary slide into its collection on
+        PANCAM_PATH. The approval itself has already been recorded
         in the DB by this point, so a copy problem (missing file, network hiccup)
         is surfaced as a warning rather than rolled back or allowed to block the
         workflow.
 
-        Returns a list of problem descriptions, empty when both copies land. The
+        Returns a list of problem descriptions, empty when every copy lands. The
         caller decides how to show them, so a batch pools every scene's into one
         dialog rather than firing one per file."""
         scene = get_scene_by_id(self.conn, scene_id)
@@ -418,7 +414,9 @@ class SupervisorDashboard(Dashboard):
             ),
             "Kick Back Failed"
         )
+        problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list()
+        self._warn_not_copied(problems)
         return ok
 
     def handle_approve(self):
@@ -429,6 +427,7 @@ class SupervisorDashboard(Dashboard):
 
         def _approve(scene_id):
             supervisor_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
+            problems.extend(self._sync_asdf_copies(scene_id))
             problems.extend(self._copy_approved_outputs(scene_id))
 
         self.run_bulk_action(
@@ -438,8 +437,7 @@ class SupervisorDashboard(Dashboard):
             partial_msg="{done} scene(s) approved; {skipped} were no longer eligible.",
             confirm_msg="Approve {n} scenes?\n\nThis cannot be undone.",
         )
-        if problems:
-            QMessageBox.warning(self, "Files Not Copied", "\n\n".join(problems))
+        self._warn_not_copied(problems)
 
     def handle_mark_bad_scene(self):
         scene_id = self._my_queue_scene_id()
@@ -456,7 +454,9 @@ class SupervisorDashboard(Dashboard):
         ok = self._run_db_action(
             lambda: mark_scene_issues(self.conn, scene_id, self.user['id']), "Mark Bad Scene Failed"
         )
+        problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list()
+        self._warn_not_copied(problems)
         if ok:
             QMessageBox.information(self, "Marked", "Scene marked as having issues.")
 
@@ -498,7 +498,7 @@ class SupervisorDashboard(Dashboard):
         dialog = EditSceneDialog(self.conn, scene, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._run_db_action(
+        ok = self._run_db_action(
             lambda: supervisor_edit_scene(
                 self.conn, scene_id, self.user['id'], dialog.get_status(),
                 owner_id=dialog.get_owner_id(),
@@ -509,9 +509,11 @@ class SupervisorDashboard(Dashboard):
             ),
             "Edit Scene Failed"
         )
+        problems = self._sync_asdf_copies(scene_id) if ok else []
         # Reassigning a scene can take it out of this supervisor's own queue,
         # which is a correction rather than a review they finished.
         self.refresh_task_list(celebrate_empty=False)
+        self._warn_not_copied(problems)
 
     def _batch_edit_scenes(self):
         """Apply one set of field changes to every selected scene. Fields left
@@ -526,16 +528,22 @@ class SupervisorDashboard(Dashboard):
         if not summary:
             QMessageBox.information(self, "Edit", "No fields were changed.")
             return
-        self.run_bulk_action(
-            self.master_table,
-            lambda sid: supervisor_edit_scene(
+        problems = []
+
+        def _edit(sid):
+            result = supervisor_edit_scene(
                 self.conn, sid, self.user['id'], dialog.get_status(),
                 owner_id=dialog.get_owner_id(),
                 peer_reviewer_id=dialog.get_peer_reviewer_id(),
                 scene_supervisor_id=dialog.get_supervisor_id(),
                 claimed_by=dialog.get_claimed_by(),
                 comments=dialog.get_notes(),
-            ),
+            )
+            problems.extend(self._sync_asdf_copies(sid))
+            return result
+
+        self.run_bulk_action(
+            self.master_table, _edit,
             "Edit",
             confirm_msg=f"Apply these changes to {{n}} scenes?\n\n{summary}",
             done_msg="{done} scene(s) updated.",
@@ -543,6 +551,7 @@ class SupervisorDashboard(Dashboard):
             partial_msg="{done} scene(s) updated; {skipped} could not be.",
             celebrate_empty=False,
         )
+        self._warn_not_copied(problems)
 
     def handle_reset_scene(self):
         scene_id = self.selected_id(self.master_table)
@@ -556,7 +565,9 @@ class SupervisorDashboard(Dashboard):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        self._run_db_action(
+        ok = self._run_db_action(
             lambda: supervisor_reset_scene(self.conn, scene_id, self.user['id']), "Reset Failed"
         )
+        problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list(celebrate_empty=False)
+        self._warn_not_copied(problems)

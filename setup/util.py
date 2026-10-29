@@ -26,12 +26,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.controller import asdf_stamps
 from app.db import get_db_connection, initialize_db
 from app.models import SceneStatus
 from app.paths import (
     FolderKind, Panel, sol_dir_name, versionless_name,
     find_fits_file, find_summary_slide,
     READY_DIR, APPROVED_DIR, make_collection_dirs, copy_to_collection,
+    PRELIM_DIR, ASDF_COLLECTIONS, sync_asdf_copies,
 )
 
 try:
@@ -1131,6 +1133,48 @@ def copy_approved(conn, pancam_root, collection, locate, label, dry_run=False):
     )
 
 
+def sync_asdf(conn, pancam_root, statuses=None, dry_run=False):
+    """Bring every scene's stamped .fits copies in ASDF_COLLECTIONS in line
+    with its status and DB names, the same as ROVR does on each workflow step.
+    `statuses` limits the run to scenes in those statuses.
+
+    Safe to re-run: a copy already current is left alone."""
+    if not dry_run:
+        for collection, _ in ASDF_COLLECTIONS:
+            make_collection_dirs(pancam_root, collection)
+
+    scenes = conn.execute("SELECT * FROM scenes").fetchall()
+    if statuses is not None:
+        scenes = [s for s in scenes if s['status'] in statuses]
+
+    wrote = removed = missing = failed = 0
+    prefix = "[dry run] " if dry_run else ""
+    for scene in scenes:
+        try:
+            changes = sync_asdf_copies(pancam_root, scene, asdf_stamps(conn, scene),
+                                       dry_run=dry_run)
+        except FileNotFoundError:
+            print(f"  MISSING .fits file for approved {scene['name']} (scene id {scene['id']})")
+            missing += 1
+            continue
+        except (OSError, ValueError) as e:
+            print(f"  FAILED {scene['name']} (scene id {scene['id']}): {e}")
+            failed += 1
+            continue
+        for action, path in changes:
+            print(f"  {prefix}{action} {path}")
+            if action == 'wrote':
+                wrote += 1
+            else:
+                removed += 1
+
+    verb = "would write" if dry_run else "wrote"
+    print(
+        f"\nScenes: {len(scenes)} checked, {verb} {wrote} copies, "
+        f"removed {removed}, {missing} approved missing a .fits file, {failed} failed"
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _fail(msg):
@@ -1220,8 +1264,13 @@ def cmd_build_slides(args):
 def cmd_copy_approved(args):
     root = _pancam_root(args)
     with _db() as conn:
-        copy_approved(conn, root, READY_DIR, find_fits_file, ".fits file",
-                      dry_run=args.dry_run)
+        sync_asdf(conn, root, statuses=(SceneStatus.APPROVED,), dry_run=args.dry_run)
+
+
+def cmd_sync_asdf(args):
+    root = _pancam_root(args)
+    with _db() as conn:
+        sync_asdf(conn, root, dry_run=args.dry_run)
 
 
 def cmd_copy_approved_slides(args):
@@ -1309,8 +1358,14 @@ def build_parser():
     p.set_defaults(func=cmd_build_slides)
 
     p = sub.add_parser("copy-approved", parents=[path_opt, preview_opt],
-                        help=f"Copy each approved scene's latest .fits into <path>/{READY_DIR}.")
+                        help=f"Copy each approved scene's latest .fits, stamped, into <path>/{READY_DIR} "
+                                f"and <path>/{PRELIM_DIR}.")
     p.set_defaults(func=cmd_copy_approved)
+
+    p = sub.add_parser("sync-asdf", parents=[path_opt, preview_opt],
+                        help=f"Stamp every submitted scene's .fits into <path>/{PRELIM_DIR}, approved "
+                                f"ones also into <path>/{READY_DIR}, and remove copies a scene no longer belongs in.")
+    p.set_defaults(func=cmd_sync_asdf)
 
     p = sub.add_parser("copy-approved-slides", parents=[path_opt, preview_opt],
                         help=f"Copy each approved scene's summary slide into <path>/{APPROVED_DIR}. "

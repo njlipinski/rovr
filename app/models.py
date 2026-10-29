@@ -31,6 +31,10 @@ class SceneStatus:
     # already attached goes straight to 6 and never passes through 5 
     SUPERVISOR_BOUND = (PENDING_SUPERVISOR, IN_SUPERVISOR_REVIEW)
 
+    # Submitted and not marked bad: what ready_for_asdf_preliminary holds.
+    PRELIMINARY = (PENDING_REVIEW, IN_REVIEW, NEEDS_REVISION,
+                   PENDING_SUPERVISOR, IN_SUPERVISOR_REVIEW, APPROVED)
+
 
 class SceneFlag:
     OTHER           = 0
@@ -55,6 +59,15 @@ class SceneFlag:
         if not flags_set:
             return '{}'
         return '{' + ','.join(str(f) for f in sorted(flags_set)) + '}'
+
+
+class FitsStamp:
+    """Cards ROVR writes to HDU 0 of each .fits it copies into an ASDF
+    collection. HDU 0 is where ROI Studio keeps scene-wide cards."""
+    APPROVED   = 'APPROVED'
+    ANALYST    = 'ANALYST'
+    REVIEWER   = 'REVIEWER'
+    SUPERVISOR = 'SUPERVISOR'
 
 
 class Decision:

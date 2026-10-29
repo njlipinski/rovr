@@ -277,9 +277,11 @@ class AnalystDashboard(Dashboard):
             lambda: submit_scene(self.conn, scene_id, self.user['id'], comment), "Submit Failed"
         )
         problem = self._build_slide_if_supervisor_bound(scene_id) if ok else None
+        copy_problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list()
         if problem:
             QMessageBox.warning(self, "Summary Slide Not Built", problem)
+        self._warn_not_copied(copy_problems)
         return ok
 
     def handle_submit(self):
@@ -312,9 +314,11 @@ class AnalystDashboard(Dashboard):
             "Approve Failed"
         )
         problem = self._build_slide_if_supervisor_bound(scene_id) if ok else None
+        copy_problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list()
         if problem:
             QMessageBox.warning(self, "Summary Slide Not Built", problem)
+        self._warn_not_copied(copy_problems)
         return ok
 
     def _do_kick_back(self, scene_id, comment=None):
@@ -323,7 +327,9 @@ class AnalystDashboard(Dashboard):
             lambda: peer_review_scene(self.conn, scene_id, self.user['id'], Decision.REQUEST_REVISION, comment),
             "Kick Back Failed"
         )
+        copy_problems = self._sync_asdf_copies(scene_id) if ok else []
         self.refresh_task_list()
+        self._warn_not_copied(copy_problems)
         return ok
 
     def handle_approve(self):
@@ -335,12 +341,14 @@ class AnalystDashboard(Dashboard):
         dialog afterwards. Approving a batch should not mean dismissing a
         warning per scene."""
         slide_problems = []
+        copy_problems = []
 
         def _approve(scene_id):
             peer_review_scene(self.conn, scene_id, self.user['id'], Decision.APPROVE, None)
             problem = self._build_slide_if_supervisor_bound(scene_id)
             if problem:
                 slide_problems.append(problem)
+            copy_problems.extend(self._sync_asdf_copies(scene_id))
 
         self.run_bulk_action(
             self.my_queue_table, _approve, "Approve",
@@ -351,6 +359,7 @@ class AnalystDashboard(Dashboard):
         )
         if slide_problems:
             QMessageBox.warning(self, "Summary Slides Not Built", "\n\n".join(slide_problems))
+        self._warn_not_copied(copy_problems)
 
     def handle_release(self):
         self.run_bulk_action(

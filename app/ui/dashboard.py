@@ -21,7 +21,7 @@ from PyQt6.QtGui import (
 from app.models import SceneStatus, SceneFlag, Role
 from app.paths import (
     FolderKind, kind_path, find_sel_file, find_fits_file,
-    find_scene_folder, summary_slide_paths,
+    find_scene_folder, summary_slide_paths, sync_asdf_copies, READY_DIR,
 )
 from app.slides import build_summary_slide, slide_is_current
 from app.local_settings import (
@@ -50,6 +50,7 @@ from app.db import (
     get_supervisor_analyst_coverage, get_owned_activity_since, ConnectionLost,
 )
 from app.auth import verify_password, hash_password
+from app.controller import asdf_stamps
 from config import PANCAM_PATH
 try:
     from app.version import __version__
@@ -2080,6 +2081,33 @@ class Dashboard(QMainWindow):
         scene_id = self.selected_id(table)
         if scene_id is not None:
             self.handle_open_summary_slide(scene_id)
+
+    # ── ASDF collections ────────────────────────────────────────────────
+
+    def _sync_asdf_copies(self, scene_id):
+        """Bring a scene's stamped .fits copies in line with its new status.
+
+        The workflow write has already landed, so problems are returned for
+        the caller to pool into one warning, never raised."""
+        try:
+            scene = get_scene_by_id(self.conn, scene_id)
+            if scene is None:
+                return []
+            stamps = asdf_stamps(self.conn, scene)
+        except sqlite3.OperationalError:
+            return []      # the workflow write already succeeded; sync-asdf can catch up
+        try:
+            sync_asdf_copies(PANCAM_PATH, scene, stamps)
+        except FileNotFoundError:
+            return [f"'{scene['name']}' was approved, but no .fits file "
+                    f"could be found to copy to {READY_DIR}."]
+        except (OSError, ValueError) as e:
+            return [f"'{scene['name']}': its .fits copies could not be updated:\n{e}"]
+        return []
+
+    def _warn_not_copied(self, problems):
+        if problems:
+            QMessageBox.warning(self, "Files Not Copied", "\n\n".join(problems))
 
     # ── Summary slides ──────────────────────────────────────────────────
 

@@ -5,6 +5,8 @@ import os
 BLOCK = 2880   # FITS logical record size
 CARD  = 80     # every card is exactly this wide, space-padded
 _CARDS_PER_BLOCK = BLOCK // CARD
+KEYWORD_LEN = 8          # longer keywords need HIERARCH
+HIERARCH = 'HIERARCH '
 
 
 def _split_value(text):
@@ -145,6 +147,26 @@ def iter_hdus(path, max_hdus=256):
             seen += 1
             f.seek(start + consumed)
             yield header, f.read(size)
+
+
+def write_stamped(src, dest, stamps):
+    """Copy `src` to `dest` with each {keyword: value} in `stamps` set on HDU 0.
+
+    Pixel data and every other card pass through unchanged. The write goes to
+    a temp file first, so a reader never sees a half-written `dest`."""
+    from astropy.io import fits
+
+    tmp = dest + '.tmp'
+    try:
+        with fits.open(src, do_not_scale_image_data=True) as hdul:
+            header = hdul[0].header
+            for key, value in stamps.items():
+                header[key if len(key) <= KEYWORD_LEN else HIERARCH + key] = value
+            hdul.writeto(tmp, overwrite=True, output_verify='ignore')
+        os.replace(tmp, dest)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def read_headers(path, max_hdus=256):

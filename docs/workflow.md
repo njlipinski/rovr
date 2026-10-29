@@ -124,6 +124,10 @@ By the time a scene arrives here its **summary slide** has already been built: a
    - **Kick back** (comment optional but recommended): `supervisor_id` set, status becomes `4`, returns to Analyst 1.
    - **Mark Bad Scene**: `supervisor_id` set, status becomes `8`. The scene leaves the normal workflow; the audit log records which flags were set on it.
 
+### ASDF copies
+
+From submission on, ROVR keeps a copy of the scene's `.fits` in `ready_for_asdf_preliminary`, so the ASDF database can be compiled before review finishes. Each copy is stamped with `APPROVED` (T/F), `ANALYST`, `REVIEWER` and `SUPERVISOR`, refreshed at every step. Approval also places it in `ready_for_asdf`. A kicked-back scene keeps its copy; marking a scene bad removes it.
+
 ---
 
 ## Status Reference

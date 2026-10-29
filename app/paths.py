@@ -8,7 +8,8 @@ import os
 import re
 import shutil
 
-from app.models import Rover
+from app.fits_header import read_headers, write_stamped
+from app.models import Rover, SceneStatus
 
 
 class FolderKind:
@@ -53,6 +54,17 @@ SUMMARY_SUFFIX = '_summary.pdf'
 
 # The .fits of every approved scene, for the ASDF pipeline to consume.
 READY_DIR = 'ready_for_asdf'
+
+# The .fits of every submitted scene, so the ASDF database can be compiled
+# before review finishes. FitsStamp.APPROVED tells the two apart.
+PRELIM_DIR = 'ready_for_asdf_preliminary'
+
+# Each .fits collection and the statuses it holds. Copies are stamped with
+# FitsStamp cards; see sync_asdf_copies.
+ASDF_COLLECTIONS = (
+    (PRELIM_DIR, SceneStatus.PRELIMINARY),
+    (READY_DIR,  (SceneStatus.APPROVED,)),
+)
 
 # The summary slide of every approved scene, for students to browse as worked
 # examples of what a finished scene looks like. 
@@ -316,3 +328,57 @@ def copy_to_collection(src, pancam_path, collection, rover, dry_run=False):
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(src, dest)
     return dest
+
+
+def stamp_to_collection(src, pancam_path, collection, rover, stamps, dry_run=False):
+    """Write a stamped copy of the .fits `src` into <collection>/<rover>/,
+    returning the destination, or None if the copy there is already current.
+
+    Current means newer than `src` and already carrying `stamps`: a status
+    change restamps an unchanged source, a re-save recopies it."""
+    dest = os.path.join(pancam_path, collection, rover, os.path.basename(src))
+    if os.path.isfile(dest) and os.path.getmtime(dest) >= os.path.getmtime(src):
+        header = read_headers(dest, max_hdus=1)[0]
+        if all(header.get(k) == v for k, v in stamps.items()):
+            return None
+    if not dry_run:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        write_stamped(src, dest, stamps)
+    return dest
+
+
+def remove_from_collection(name, pancam_path, collection, rover, dry_run=False):
+    """Delete <collection>/<rover>/<name>, returning its path, or None if absent."""
+    dest = os.path.join(pancam_path, collection, rover, name)
+    if not os.path.isfile(dest):
+        return None
+    if not dry_run:
+        os.remove(dest)
+    return dest
+
+
+def sync_asdf_copies(pancam_path, scene, stamps, dry_run=False):
+    """Bring this scene's copy in each ASDF_COLLECTIONS entry in line with its
+    status: stamped if the collection holds that status, removed if not.
+
+    Returns [(action, path)] for what changed, action 'wrote' or 'removed'.
+    A scene with no .fits is a no-op, except an approved one, which raises
+    FileNotFoundError since ready_for_asdf is meant to hold it."""
+    src = find_fits_file(pancam_path, scene)
+    if src is None:
+        if scene['status'] == SceneStatus.APPROVED:
+            raise FileNotFoundError(f"no .fits file found for '{scene['name']}'")
+        return []
+    changes = []
+    for collection, statuses in ASDF_COLLECTIONS:
+        if scene['status'] in statuses:
+            dest = stamp_to_collection(src, pancam_path, collection, scene['rover'],
+                                       stamps, dry_run=dry_run)
+            action = 'wrote'
+        else:
+            dest = remove_from_collection(os.path.basename(src), pancam_path,
+                                          collection, scene['rover'], dry_run=dry_run)
+            action = 'removed'
+        if dest:
+            changes.append((action, dest))
+    return changes

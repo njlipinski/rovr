@@ -10,7 +10,21 @@ from app.db import (
     record_submission, record_peer_review, record_supervisor_review,
     record_force_release, record_scene_edit, record_scene_reset,
 )
-from app.models import SceneStatus, Decision, Stage, SceneFlag, UNCHANGED
+from app.models import SceneStatus, Decision, Stage, SceneFlag, FitsStamp, UNCHANGED
+
+
+def asdf_stamps(conn, scene):
+    """The FitsStamp cards for this scene's ASDF copies. A role nobody has
+    filled yet stamps as ''."""
+    def username(user_id):
+        user = get_user_by_id(conn, user_id) if user_id is not None else None
+        return user['username'] if user else ''
+    return {
+        FitsStamp.APPROVED:   scene['status'] == SceneStatus.APPROVED,
+        FitsStamp.ANALYST:    username(scene['owner_id']),
+        FitsStamp.REVIEWER:   username(scene['peer_reviewer_id']),
+        FitsStamp.SUPERVISOR: username(scene['supervisor_id']),
+    }
 
 
 def claim_from_pool(conn, scene_id, analyst_id):
