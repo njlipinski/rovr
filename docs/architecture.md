@@ -123,7 +123,7 @@ All four log to `reviews`.
 
 ### ASDF collections
 
-`ready_for_asdf_preliminary/<rover>/` holds a stamped copy of each scene's `.fits` for statuses 2-7; `ready_for_asdf/<rover>/` holds status 7 only. `paths.sync_asdf_copies()` writes or removes a scene's copies to match its status, and `Dashboard._sync_asdf_copies()` runs it after every workflow write except claims and releases. Stamps go on HDU 0 only, where ROI Studio keeps scene-wide cards. Working files are never stamped. `setup/util.py sync-asdf` applies the same rule to every scene. See ADR-030.
+`ready_for_asdf_preliminary/<rover>/` holds a stamped copy of each scene's `.fits` for statuses 2-7; `ready_for_asdf/<rover>/` holds status 7 only. `paths.sync_asdf_copies()` writes or removes a scene's copies to match its status, and `Dashboard._sync_asdf_copies()` runs it after every workflow write except claims and releases. Stamps go on HDU 0 only, where ROI Studio keeps scene-wide cards. The card names (`APPROVAL`, `ANALYST`, `REVIEWER`, `SUPERVISOR`) are a contract with pcam_asdf's `ROI_GLOBAL_METADATA_FIELDS`. Renaming a card makes existing copies stale, and the next sync rewrites them from the unstamped source. Working files are never stamped. `setup/util.py sync-asdf` applies the same rule to every scene.
 
 ### `app/ui/`
 

@@ -126,7 +126,7 @@ By the time a scene arrives here its **summary slide** has already been built: a
 
 ### ASDF copies
 
-From submission on, ROVR keeps a copy of the scene's `.fits` in `ready_for_asdf_preliminary`, so the ASDF database can be compiled before review finishes. Each copy is stamped with `APPROVED` (T/F), `ANALYST`, `REVIEWER` and `SUPERVISOR`, refreshed at every step. Approval also places it in `ready_for_asdf`. A kicked-back scene keeps its copy; marking a scene bad removes it.
+From submission on, ROVR keeps a copy of the scene's `.fits` in `ready_for_asdf_preliminary`, so the ASDF database can be compiled before review finishes. Each copy is stamped with `APPROVAL` (T/F), `ANALYST`, `REVIEWER` and `SUPERVISOR` on HDU 0, refreshed at every step. These names match what pcam_asdf reads (`ROI_GLOBAL_METADATA_FIELDS`). Approval also places it in `ready_for_asdf`. A kicked-back scene keeps its copy; marking a scene bad removes it.
 
 ---
 

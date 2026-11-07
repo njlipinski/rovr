@@ -56,7 +56,7 @@ SUMMARY_SUFFIX = '_summary.pdf'
 READY_DIR = 'ready_for_asdf'
 
 # The .fits of every submitted scene, so the ASDF database can be compiled
-# before review finishes. FitsStamp.APPROVED tells the two apart.
+# before review finishes. The FitsStamp.APPROVED card (APPROVAL) tells the two apart.
 PRELIM_DIR = 'ready_for_asdf_preliminary'
 
 # Each .fits collection and the statuses it holds. Copies are stamped with

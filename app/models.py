@@ -63,8 +63,11 @@ class SceneFlag:
 
 class FitsStamp:
     """Cards ROVR writes to HDU 0 of each .fits it copies into an ASDF
-    collection. HDU 0 is where ROI Studio keeps scene-wide cards."""
-    APPROVED   = 'APPROVED'
+    collection. HDU 0 is where ROI Studio keeps scene-wide cards.
+
+    pcam_asdf reads these by name (ROI_GLOBAL_METADATA_FIELDS in
+    pcam_asdf/settings/metadata.py), so keep the two in step."""
+    APPROVED   = 'APPROVAL'
     ANALYST    = 'ANALYST'
     REVIEWER   = 'REVIEWER'
     SUPERVISOR = 'SUPERVISOR'
