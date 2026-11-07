@@ -12,9 +12,9 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -38,13 +38,13 @@ jobs:
           generate_release_notes: true
 
   build-macos:
-    runs-on: macos-14  # Apple Silicon (arm64)
+    runs-on: macos-15  # Apple Silicon (arm64)
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -74,9 +74,9 @@ jobs:
       # Floor for what the bundle will launch on.
       MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           architecture: 'x64'
