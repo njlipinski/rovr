@@ -1458,6 +1458,7 @@ class Dashboard(QMainWindow):
         topbar = QWidget()
         topbar.setFixedHeight(32)
         topbar_layout = QHBoxLayout(topbar)
+        self._topbar_layout = topbar_layout
         topbar_layout.setContentsMargins(2, 0, 2, 0)
         topbar_layout.addWidget(QLabel("ROVR"))
         topbar_layout.addStretch()

@@ -15,3 +15,7 @@ else:
     PANCAM_PATH = "/Volumes/Research/Rice/Pancam"
 
 DB_PATH = os.path.join(PANCAM_PATH, "rovr.sqlite")
+
+# A supervisor login that can reach the Backup folder runs a backup once the
+# last one is this many days old.
+BACKUP_INTERVAL_DAYS = 7

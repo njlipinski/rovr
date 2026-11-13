@@ -1,9 +1,13 @@
 """supervisor dashboard: pool, personal queue, in-progress, and master list"""
+import threading
+import time
+
 from PyQt6.QtWidgets import (
     QSplitter, QMessageBox, QTableWidgetItem,
     QDialog, QVBoxLayout, QLabel, QComboBox, QDialogButtonBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
+from app.backup import backup_scenes, last_backup_time, BACKUP_INTERVAL_DAYS
 from app.ui.dashboard import (
     Dashboard, WordSelectTextEdit, NoteResizeGrip, SizePersistentDialog, SCENE_BUTTONS,
     PersistentSplitter,
@@ -21,10 +25,16 @@ from app.controller import (
 )
 from app.models import SceneStatus, Decision, Role, UNCHANGED
 from app.paths import find_summary_slide, APPROVED_DIR, copy_to_collection
-from config import PANCAM_PATH
+from config import PANCAM_PATH, DB_PATH
 
 
 _LEAVE_UNCHANGED = "(leave unchanged)"
+
+
+class _BackupSignals(QObject):
+    """Carries backup progress from the worker thread to the UI thread."""
+    progress = pyqtSignal(str)
+    done = pyqtSignal(str)
 
 
 def _make_user_combo(conn, roles, current_id, batch=False):
@@ -196,6 +206,64 @@ class SupervisorDashboard(Dashboard):
     def __init__(self, conn, user, away_since=None):
         super().__init__(conn, user, away_since=away_since)
         self._build_main_content()
+        self._backup_checked = False
+        self._backup_thread = None
+        self._backup_quit_ok = False
+
+    # ── Automatic backup ────────────────────────────────────────────────
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._backup_checked:
+            self._backup_checked = True
+            QTimer.singleShot(0, self._maybe_start_backup)
+
+    def _maybe_start_backup(self):
+        """Run a backup in the background if this machine can reach the
+        Backup folder and the last one is stale."""
+        last = last_backup_time(PANCAM_PATH)
+        if last is None or time.time() - last < BACKUP_INTERVAL_DAYS * 86400:
+            return
+        label = QLabel("Backing up... (don't quit)")
+        self._topbar_layout.insertWidget(
+            self._topbar_layout.indexOf(self._filter_btn), label)
+        signals = _BackupSignals()
+        signals.progress.connect(label.setToolTip)
+        signals.done.connect(label.setText)
+
+        def run():
+            try:
+                ok = backup_scenes(PANCAM_PATH, DB_PATH, log=signals.progress.emit)
+            except Exception as e:  # a dropped drive must not take the app down
+                signals.progress.emit(f"Backup failed: {e}")
+                ok = False
+            signals.done.emit("Backup done" if ok else "Backup failed")
+
+        # Daemon: quitting mid-backup just stops it; .part copies keep that safe.
+        self._backup_thread = threading.Thread(target=run, daemon=True)
+        self._backup_signals = signals  # keep alive for the thread
+        self._backup_thread.start()
+
+    def _confirm_quit_during_backup(self):
+        if (self._backup_quit_ok or self._backup_thread is None
+                or not self._backup_thread.is_alive()):
+            return True
+        reply = QMessageBox.question(
+            self, "Backup In Progress",
+            "A backup is still running. Quit anyway?",
+        )
+        self._backup_quit_ok = reply == QMessageBox.StandardButton.Yes
+        return self._backup_quit_ok
+
+    def handle_logout(self):
+        if self._confirm_quit_during_backup():
+            super().handle_logout()
+
+    def closeEvent(self, event):
+        if not self._confirm_quit_during_backup():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     # ── Build UI ────────────────────────────────────────────────────────
 

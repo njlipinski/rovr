@@ -17,6 +17,7 @@ rovr/
 │   ├── auth.py                 # bcrypt password hashing and login verification
 │   ├── controller.py           # Workflow state machine (submit, review, claim, release, admin ops)
 │   ├── local_settings.py       # Per-machine settings stored in %APPDATA%\rovr\local.json
+│   ├── backup.py               # DB + working-folder backup (CLI and weekly supervisor run)
 │   ├── version.py              # Auto-generated at build time (gitignored), contains __version__
 │   └── ui/
 │       ├── login.py            # Login window: authenticates and routes to dashboard
@@ -160,6 +161,8 @@ PyQt6 widgets. `Dashboard` is the base class; `AnalystDashboard` and `Supervisor
 **`analyst_dash.py`**: four sections. My Work Queue (status 1/4 owned, or 3 claimed for peer review), In Progress (read-only: owned scenes at status 2/3/5/6, or scenes this analyst peer-reviewed at status 4/5/6), Ready for Peer Review (status 2, shared pool), and Unclaimed Scenes (status 0, shared pool), plus My Completed Scenes and All Scenes tabs. Defines only the handlers unique to this role (Submit, Release, Approve, Claim) plus a `_review_callbacks()` override; the shared scene actions come from `Dashboard`. Kicking a scene back is done from the Review dialog, not a tray button.
 
 **`supervisor_dash.py`**: four sections. My Work Queue (status 6, claimed scenes to approve/kick back/mark bad), Supervisor Pool (status 5, shared, claim), In Progress (status 4 scenes this supervisor kicked back, read-only), and All Scenes (master list, with Edit Scene and Reset Scene). Edit Scene on a multi-row selection opens `EditSceneDialog` in batch mode, where every field defaults to "leave unchanged" and only the ones moved off it are written; the batch runs through `run_bulk_action()`, so each scene is written and logged independently. Defines only the role-specific handlers (Approve, Mark Bad Scene, Release, Claim, Edit Scene, Reset Scene) plus a `_review_callbacks()` override. Kicking a scene back is done from the Review dialog, not a tray button.
+
+Automatic backup: on first show, if this machine can reach `R:\Rice\Backup` and the newest DB backup is older than `BACKUP_INTERVAL_DAYS`, `app/backup.py`'s `backup_scenes()` (the same function as `util.py backup`) runs on a daemon thread with a topbar status label. Quitting or logging out mid-run asks first. Working files are copied via `.part` then renamed, so an interrupted run never leaves a truncated file that later runs would skip.
 
 **`app/slides.py`**: renders a scene's summary slide, a one-page PDF with left-eye DCS, right-eye RGB, spectra and per-ROI metadata in a 2x2 grid, written both beside its source images and into `summary_slides/<rover>/`. The three image panels are composited from the PNGs ROI Studio writes on every save, at native size, never cropped. `build_summary_slide()` and `slide_is_current()` are pure functions of a scene row and the Pancam tree, with no Qt and no SQL, so they can run off the UI thread.
 

@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.backup import backup_scenes
 from app.controller import asdf_stamps
 from app.db import get_db_connection, initialize_db
 from app.models import SceneStatus
@@ -699,101 +700,6 @@ def fix_panel_names(pancam_root, dry_run=False):
         )
 
 
-def backup_scenes(pancam_root, db_path):
-    """Back up the database and both rovers' 'working' directories under
-    into R:\\Rice\\Backup. 
-
-    The DB is snapshotted through SQLite's online backup API (safe against
-    concurrent writers on the shared drive) into a timestamped file, so
-    every run keeps its own dated copy rather than overwriting the last one.
-    DB_PATH sits on the same shared network drive as the live app -- the
-    backup API's page-by-page read can intermittently surface as a generic
-    SQLite "disk I/O error" rather than a clean lock error on a flaky
-    network filesystem, especially while another user's ROVR instance has
-    the file open. The whole backup is retried a few times before giving up,
-    same spirit as db.py's _with_lock_retry for ordinary writes.
-
-    Working-directory files (.sel/.fits) are mirrored into a single
-    persistent backup/working tree, preserving the rover/####/working
-    layout. Existing files there are never touched or re-copied -- .sel and
-    .fits files don't change once written, so only new files since the last
-    run are copied.
-    """
-    pancam_path = Path(pancam_root)
-    backup_root = pancam_path.parent / "Backup"
-    db_backup_dir = backup_root / "db"
-    db_backup_dir.mkdir(parents=True, exist_ok=True)
-
-    db_path = Path(db_path)
-    timestamp = datetime.now().strftime("%Y_%m_%d")
-    db_backup_path = db_backup_dir / f"{db_path.stem}_{timestamp}{db_path.suffix}"
-
-    retries = 5
-    last_error = None
-    for attempt in range(retries):
-        if db_backup_path.exists():
-            db_backup_path.unlink()  # drop any partial file from a failed attempt
-        try:
-            src_conn = sqlite3.connect(db_path, timeout=1.0)
-            try:
-                dst_conn = sqlite3.connect(db_backup_path)
-                try:
-                    src_conn.backup(dst_conn)
-                finally:
-                    dst_conn.close()
-            finally:
-                src_conn.close()
-            last_error = None
-            break
-        except sqlite3.OperationalError as e:
-            last_error = e
-        if attempt < retries - 1:
-            time.sleep(1.0)
-
-    if last_error is not None:
-        if db_backup_path.exists():
-            db_backup_path.unlink()
-        print(f"Error: database backup failed after {retries} attempts: {last_error}")
-        print("The network drive may be busy or briefly unreachable -- try again in a moment.")
-        return
-
-    print(f"Database backed up to {db_backup_path}")
-
-    copied = skipped = 0
-    for rover in ["MERA", "MERB"]:
-        rover_root = pancam_path / rover
-        if not rover_root.exists():
-            print(f"Skipping {rover}: {rover_root} does not exist.")
-            continue
-
-        sol_dirs = sorted(
-            d for d in rover_root.iterdir() if d.is_dir() and _sol_num(d.name) is not None
-        )
-        print(f"{rover}: {len(sol_dirs)} sol directories")
-        for sol_dir in sol_dirs:
-            working_dir = sol_dir / FolderKind.WORKING
-            if not working_dir.exists():
-                continue
-            sol_copied = 0
-            for item in working_dir.rglob("*"):
-                if item.is_dir():
-                    continue
-                dest = backup_root / item.relative_to(pancam_path)
-                if dest.exists():
-                    skipped += 1
-                    continue
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dest)
-                copied += 1
-                sol_copied += 1
-            # Only sols with new files report, so a re-run stays quiet
-            if sol_copied:
-                rel = working_dir.relative_to(pancam_path)
-                print(f"  {rel}: {sol_copied} copied", flush=True)
-
-    print(f"Working files: {copied} copied, {skipped} already backed up (skipped)")
-
-
 def audit_roi_names(conn, pancam_root):
     """Report ROI colour names in use, and scenes with no findable folder.
 
@@ -1238,7 +1144,7 @@ def cmd_backup(args):
     root = _pancam_root(args)
     if not DB_PATH:
         _fail("backup requires DB_PATH in config.py.")
-    backup_scenes(root, DB_PATH)
+    backup_scenes(root, DB_PATH, log=lambda msg: print(msg, flush=True))
 
 
 def cmd_audit_roi_names(args):
